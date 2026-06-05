@@ -23,5 +23,10 @@ htmlcov/
 *.tmp
 *.bak
 
+# Local GUI/file-dialog history. Keep these on this machine only.
+**/last_paths.json
+**/*_last_path.json
+**/*_last_paths.json
+
 .DS_Store
 Thumbs.db
