@@ -1,0 +1,59 @@
+{
+  "colors": {
+    "irf": "#000000",
+    "raw": "#8e0116",
+    "fit": "#0815d4"
+  },
+  "widths": {
+    "irf": 1.5,
+    "raw": 2.0,
+    "fit": 4.0
+  },
+  "offsets": {
+    "irf": 1.0,
+    "raw": 1.0,
+    "fit": 1.0
+  },
+  "visible": {
+    "irf": true,
+    "raw": true,
+    "fit": true
+  },
+  "checklists": {},
+  "text_params": {
+    "y_data": "Raw_Counts",
+    "y_irf": "Raw_IRF",
+    "y_fit": "Fit_Fitted Data",
+    "time_unit": "auto",
+    "ex": "330",
+    "emi": "504",
+    "tau_sub": "d",
+    "tau": "1.67",
+    "tau_stderr": "0.42",
+    "tau_unit": "ms",
+    "beta": "0.4",
+    "beta_stderr": "0.07",
+    "chi2": "1.6"
+  },
+  "legend_pos": {
+    "x": 0.9790919996401185,
+    "y": 0.9973752012882449
+  },
+  "text_pos": {
+    "x": 0.5713065352940285,
+    "y": 0.6391972453489563
+  },
+  "xrange": [
+    1.7175891900963336,
+    100.4880240000006
+  ],
+  "yrange": [
+    -0.09279221100217416,
+    5.17065773312425
+  ],
+  "yrange2": null,
+  "xrange_spec": null,
+  "yrange_spec": null,
+  "spectra_palette": null,
+  "spectra_selected_indices": []
+}
