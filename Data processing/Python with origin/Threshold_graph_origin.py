@@ -212,7 +212,7 @@ if __name__ == "__main__":
     selected_dir = os.path.dirname(files[0])
     df_plot_data, df_fit, df_other = identify_and_load_data(files)
 
-    template_file = r"C:\My files\Google drive sync\St Andrews\Python\Data processing\Python plot lib\origin_template\Threshold.otpu"
+    template_file = os.path.join(os.path.dirname(__file__), "origin_template", "Threshold.otpu")
 
     if not os.path.exists(template_file):
         print(f"❌ 找不到模板文件，请检查路径: {template_file}")

@@ -294,8 +294,9 @@ if __name__ == "__main__":
     df_plot_data, df_fit, df_other = identify_and_load_data(files)
 
     # 定义模板路径
-    threshold_template = r"C:\My files\Google drive sync\St Andrews\Python\Data processing\Python plot lib\origin_template\Threshold.otpu"
-    spectra_template = r"C:\My files\Google drive sync\St Andrews\Python\Data processing\Python plot lib\origin_template\Lasing_spectra.otpu"
+    template_dir = os.path.join(os.path.dirname(__file__), "origin_template")
+    threshold_template = os.path.join(template_dir, "Threshold.otpu")
+    spectra_template = os.path.join(template_dir, "Lasing_spectra.otpu")
 
     # 1. 画阈值图
     plot_origin_threshold(

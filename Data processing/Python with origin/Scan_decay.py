@@ -138,7 +138,7 @@ def run_scanner():
         print("❌ 未选择文件夹，程序退出。")
         sys.exit()
 
-    template_file = r"C:\My files\Google drive sync\St Andrews\Python\Data processing\Python plot lib\origin_template\Decay.otpu"
+    template_file = os.path.join(os.path.dirname(__file__), "origin_template", "Decay.otpu")
     if not os.path.exists(template_file):
         print(f"❌ 找不到模板文件: {template_file}")
         sys.exit()
