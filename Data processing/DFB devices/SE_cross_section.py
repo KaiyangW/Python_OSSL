@@ -340,7 +340,6 @@ class CrossSectionApp(ctk.CTk):
 
         ctk.CTkLabel(
             self.sidebar,
-            text="Use prompt PLQY as a fraction, e.g. 0.62, not 62%.",
             justify="left",
             wraplength=260,
             font=small_font,
