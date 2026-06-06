@@ -579,7 +579,7 @@ def format_rate(k):
 
 
 def format_risc_calc_panel(rates=None, waiting_message=None):
-    """Build compact text for the combined exact and approximate RISC values."""
+    """Build compact UI text for RISC values only."""
     lines = ["----------------------------------------------"]
     if waiting_message:
         lines.append(waiting_message)
@@ -587,10 +587,6 @@ def format_risc_calc_panel(rates=None, waiting_message=None):
     if rates is None:
         return "\n".join(lines)
     lines.extend([
-        f"k^S_r : {format_rate(rates.get('k_r_S'))}",
-        f"k^S_nr: {format_rate(rates.get('k_nr_S'))}",
-        f"k^S   : {format_rate(rates.get('k_S'))}",
-        f"k_ISC : {format_rate(rates.get('k_ISC'))}",
         f"Exact RISC: {format_rate(rates.get('k_RISC'))}",
         f"Masui RISC: {format_rate(rates.get('k_RISC_Masui'))}",
         f"Dias RISC : {format_rate(rates.get('k_RISC_Dias'))}",
