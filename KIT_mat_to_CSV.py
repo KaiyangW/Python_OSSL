@@ -1,23 +1,13 @@
+import concurrent.futures
 import importlib
+import os
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 
 import numpy as np
 import pandas as pd
 from scipy.io import loadmat
 from pathlib import Path
-
-
-def pick_mat_file() -> Path | None:
-    root = tk.Tk()
-    root.withdraw()
-    selected = filedialog.askopenfilename(
-        title="Select a TA .mat file to convert",
-        filetypes=[("MATLAB files", "*.mat"), ("All files", "*.*")],
-    )
-    root.destroy()
-    return Path(selected) if selected else None
-
 
 def read_mat_header(mat_path: Path) -> bytes:
     with open(mat_path, "rb") as fh:
@@ -110,14 +100,71 @@ def convert(mat_path: Path) -> Path:
     return out
 
 
+def process_folder(folder_data: tuple[str, list[str]]) -> tuple[str, int]:
+    folder_path, file_list = folder_data
+    converted_count = 0
+
+    for filepath in file_list:
+        mat_path = Path(filepath)
+        try:
+            out = convert(mat_path)
+            converted_count += 1
+            print(f"Wrote {out}")
+        except Exception as e:
+            print(f"Failed to convert {mat_path.name}: {e}")
+
+    return folder_path, converted_count
+
+
 def main() -> None:
-    mat_path = pick_mat_file()
-    if mat_path is None:
-        print("No file selected.")
+    root = tk.Tk()
+    root.withdraw()
+
+    target_folder = filedialog.askdirectory(title="Select Folder to Scan for MAT Files")
+
+    if not target_folder:
+        print("No folder selected. Exiting.")
+        root.destroy()
         return
 
-    out = convert(mat_path)
-    print(f"Wrote {out}")
+    print(f"Scanning directory and subdirectories:\n{target_folder}\n")
+
+    # Group files by their parent directory, matching the batch loop style used
+    # by Draw_mutiple_graphs.py.
+    folder_dict: dict[str, list[str]] = {}
+    for current_root, dirs, files in os.walk(target_folder):
+        for file in files:
+            if file.lower().endswith(".mat"):
+                if current_root not in folder_dict:
+                    folder_dict[current_root] = []
+                folder_dict[current_root].append(os.path.join(current_root, file))
+
+    total_folders = len(folder_dict)
+    if total_folders == 0:
+        print("No MAT files found.")
+        root.destroy()
+        return
+
+    print(f"Found MAT files in {total_folders} folders. Starting parallel processing...")
+
+    folder_tasks = list(folder_dict.items())
+    converted_count = 0
+
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        results = executor.map(process_folder, folder_tasks)
+
+        for folder_path, folder_count in results:
+            converted_count += folder_count
+
+    print(f"\nDone! Created {converted_count} CSV files.")
+
+    root.update()
+    messagebox.showinfo(
+        "Batch Conversion Complete",
+        f"Successfully generated {converted_count} CSV files.",
+        parent=root,
+    )
+    root.destroy()
 
 
 if __name__ == "__main__":
