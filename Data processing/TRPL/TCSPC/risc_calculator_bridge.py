@@ -59,7 +59,6 @@ APPROX_OUTPUT_CELLS = {
 }
 
 TEXT_BOX_PROPS = dict(boxstyle='round', facecolor='black', alpha=0.9, edgecolor='gray')
-RIGHT_PANEL_X = 0.58
 
 # Keep the result panel visually separate from the y-axis label/ticks.
 INFO_PANEL_WIDTH_IN = 1.85
@@ -77,6 +76,11 @@ PANEL_WSPACE = 0.18
 FIT_PANEL_FONT_FAMILY = 'Segoe UI'
 FIT_PANEL_FONT_SIZE = 9
 FIT_PANEL_LINE_STEP = 0.036
+# Vertical extent (axes fraction) available for stacked summary lines and the
+# smallest font we allow when auto-fitting many lines into that extent.
+FIT_PANEL_TOP_Y = 0.98
+FIT_PANEL_BOTTOM_Y = 0.02
+FIT_PANEL_MIN_FONT_SIZE = 5.0
 FIT_PANEL_COLORS = {
     'default': 'white',
     'separator': '#9a9a9a',
@@ -166,13 +170,29 @@ class FitSummaryPanel:
         self.remove()
         if self.use_info_panel:
             display_text = _wrap_info_panel_text(text)
-            y = 0.98
-            for line in display_text.splitlines():
+            lines = display_text.splitlines()
+
+            # Auto-fit: shrink the line spacing (and font, proportionally) so the
+            # whole block always fits inside the panel, no matter how many fit
+            # parameters / RISC rows are shown. Small outputs keep the defaults.
+            n_lines = max(1, len(lines))
+            avail = FIT_PANEL_TOP_Y - FIT_PANEL_BOTTOM_Y
+            step = FIT_PANEL_LINE_STEP
+            font_size = FIT_PANEL_FONT_SIZE
+            if n_lines * step > avail:
+                step = avail / n_lines
+                font_size = max(
+                    FIT_PANEL_MIN_FONT_SIZE,
+                    FIT_PANEL_FONT_SIZE * step / FIT_PANEL_LINE_STEP,
+                )
+
+            y = FIT_PANEL_TOP_Y
+            for line in lines:
                 if line.strip():
                     artist = self.target.text(
                         0.05, y, line,
                         transform=self.target.transAxes,
-                        fontsize=FIT_PANEL_FONT_SIZE,
+                        fontsize=font_size,
                         verticalalignment='top',
                         horizontalalignment='left',
                         color=_fit_summary_line_color(line),
@@ -180,7 +200,7 @@ class FitSummaryPanel:
                         clip_on=True,
                     )
                     self.artists.append(artist)
-                y -= FIT_PANEL_LINE_STEP
+                y -= step
             return
 
         artist = self.target.text(
@@ -595,11 +615,6 @@ def format_risc_calc_panel(rates=None, waiting_message=None):
     return "\n".join(lines)
 
 
-def format_risc_approx_panel(rates=None, waiting_message=None):
-    """Backward-compatible wrapper for the combined RISC calculation panel."""
-    return format_risc_calc_panel(rates, waiting_message=waiting_message)
-
-
 def clear_risc_text_box(app_state):
     box = app_state.get('risc_text_box')
     if box is not None:
@@ -608,19 +623,6 @@ def clear_risc_text_box(app_state):
         except Exception:
             pass
     app_state['risc_text_box'] = None
-
-
-def show_risc_approx_panel(app_state, ax, rates=None, waiting_message=None):
-    """Draw or update the right-hand RISC calculation panel."""
-    clear_risc_text_box(app_state)
-    text = format_risc_approx_panel(rates, waiting_message=waiting_message)
-    app_state['risc_text_box'] = ax.text(
-        RIGHT_PANEL_X, 0.98, text,
-        transform=ax.transAxes, fontsize=9,
-        verticalalignment='top', horizontalalignment='left',
-        color='white', bbox=TEXT_BOX_PROPS.copy(), family='monospace',
-    )
-    return app_state['risc_text_box']
 
 
 def clear_result_panels(app_state):
