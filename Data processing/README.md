@@ -50,10 +50,10 @@
 
 **用途**：ASE / DFB 阈值数据的**手动分段线性拟合 GUI**。读取 `*_Analysed_ultra.xlsx` 中的入射能量–积分强度曲线，交互剔除异常点后拟合，确定阈值转折点。 **使用方法**（CustomTkinter 界面）：
 
-1. 运行后点击 “Select Folder (Analysed_ultra)”，选择仅含一个 `*_Analysed_ultra.xlsx` 的文件夹。
-2. 选择 2 / 3 / 4 段线性（即 1–3 个转折点）。
-3. **左键**点击数据点 = 拟合与绘图都排除；**右键** = 仅拟合排除、绘图保留。
-4. 实时查看转折点坐标及误差、各段斜率、斜率比、R²，确认后点击 “SAVE RESULTS”。
+1.  运行后点击 “Select Folder (Analysed_ultra)”，选择仅含一个 `*_Analysed_ultra.xlsx` 的文件夹。
+2.  选择 2 / 3 / 4 段线性（即 1–3 个转折点）。
+3.  **左键**点击数据点 = 拟合与绘图都排除；**右键** = 仅拟合排除、绘图保留。
+4.  实时查看转折点坐标及误差、各段斜率、斜率比、R²，确认后点击 “SAVE RESULTS”。
 
 **输出**： - `ManualFit_Result_{base}.xlsx`（含 Parameters / Data_and_Mask / Plot_data / Fit_Line 工作表）。 - `{base}_ManualFit_Plot.png`。 - 若存在同名 `{base}_auto_fit.xlsx` 会被删除（手动结果优先）。 **说明**：独立运行，无 sibling 依赖。
 
@@ -61,7 +61,7 @@
 
 ### 6. `Abs_percentage_TMM.py`
 
-**用途**：基于**传输矩阵法（TMM）**计算薄膜吸收率 $A = 1 - R - T$。读取 CompleteEASE 导出的 $n$、$k$ 数据，按给定膜厚计算正入射下 $R$、$T$、$A$ 随波长的变化。 **模型**：三层结构 空气 ($n=1.0$) / 薄膜 / 玻璃基底 ($n=1.52$)，用 `tmm.unpolarized_RT` 逐波长计算；标注 330 nm 处吸收率及 >400 nm 区间吸收峰值。
+**用途**：基于**传输矩阵法（TMM）**计算薄膜吸收率 $A = 1 - R - T$。读取 CompleteEASE 导出的 $n$、$k$ 数据，按给定膜厚计算正入射下 $R$、$T$、$A$ 随波长的变化。 **模型**：三层结构 空气 ($n=1.0$) / 薄膜 / 玻璃基底 ($n=1.52$)，用 `tmm.unpolarized_RT` 逐波长计算；标注 330 nm 处吸收率及 \>400 nm 区间吸收峰值。
 
 **使用方法**： - 无参数运行：弹出文件选择与膜厚输入框。 - 命令行：`python Abs_percentage_TMM.py "path/to/nk data.txt" 120`（nk 文件 + 膜厚 nm）。
 
@@ -254,7 +254,7 @@ python PL_onset_runner.py --dual "fluorescence.csv" "phosphorescence.csv"
 **输出**（与输入 CSV 同目录，矢量图 **SVG**，600 dpi 渲染设置）：
 
 | 模式 | 波长坐标图 | 能量坐标图 |
-|-----------------|----------------------------|----------------------------|
+|------------------|---------------------------|---------------------------|
 | 单谱 | `{stem}_onset.svg` | `{stem}_onset_energy.svg` |
 | 双谱 | `{flu}_vs_{phos}_onset_diff.svg` | `{flu}_vs_{phos}_onset_diff_energy.svg` |
 
@@ -284,7 +284,7 @@ python PL_onset_runner.py --dual "fluorescence.csv" "phosphorescence.csv"
 
 **调用链概览**：
 
-```
+```         
 mainUI_lifetime_fit.py
   ├─ Recon_fit_process / Tail_fit_process      （拟合引擎）
   │    ├─ fit_multistart        （并行多起点 least_squares）
