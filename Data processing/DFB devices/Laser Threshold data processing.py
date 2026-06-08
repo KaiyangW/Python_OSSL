@@ -179,6 +179,7 @@ class LaserAnalysisApp(ctk.CTk):
         "warning":  "#FFB02E",  # orange
         "success":  "#2CC985",  # green
         "info":     "#4FC3F7",  # cyan
+        "fit_result": "#FF6D00",  # neon orange
         "fit":      "#B388FF",  # purple
         "window":   "#FFD54F",  # yellow
         "progress": "#90A4AE",  # blue-gray
@@ -206,6 +207,8 @@ class LaserAnalysisApp(ctk.CTk):
             return "success"
         if "[info]" in low:
             return "info"
+        if "[auto-fit]" in low and "result:" in low:
+            return "fit_result"
         if "[auto-fit]" in low:
             return "fit"
         if "[auto-window]" in low or "[manual-window]" in low:
@@ -431,7 +434,7 @@ class LaserAnalysisApp(ctk.CTk):
             n_pts = len(pump)
 
             if np.any(int_matrix < 0):
-                self.log("  [Warning] 发现光谱数据中包含负数 (LabVIEW记录错误)。已自动执行绝对值纠正。")
+                self.log("  [Warning] Negative values found in the spectral data (LabVIEW recording issue). Applied absolute-value correction automatically.")
                 int_matrix = np.abs(int_matrix)
             
             max_intensity_idx = np.unravel_index(np.argmax(int_matrix, axis=None), int_matrix.shape)

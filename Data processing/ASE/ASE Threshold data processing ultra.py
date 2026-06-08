@@ -293,6 +293,7 @@ class LaserAnalysisApp(ctk.CTk):
         "warning":  "#FFB02E",  # orange
         "success":  "#2CC985",  # green
         "info":     "#4FC3F7",  # cyan
+        "fit_result": "#FF6D00",  # neon orange
         "fit":      "#B388FF",  # purple
         "window":   "#FFD54F",  # yellow
         "progress": "#90A4AE",  # blue-gray
@@ -320,6 +321,8 @@ class LaserAnalysisApp(ctk.CTk):
             return "success"
         if "[info]" in low:
             return "info"
+        if "[auto-fit]" in low and "result:" in low:
+            return "fit_result"
         if "[auto-fit]" in low:
             return "fit"
         if "[auto-window]" in low or "[manual-window]" in low:
