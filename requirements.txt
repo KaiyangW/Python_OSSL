@@ -1,0 +1,46 @@
+# Consolidated requirements for the Python_OSSL repository.
+# Covers third-party imports across all scripts (Auto calculator, Data processing,
+# ns-TA, stresing_python-master). Standard-library and local modules are excluded.
+
+# Core numerics / data
+numpy==2.3.5
+pandas==2.3.3
+scipy==1.16.3
+
+# Plotting / visualization
+matplotlib==3.10.8
+plotly==6.8.0
+dash==4.2.0
+cmcrameri==1.9
+customtkinter==5.2.2
+
+# Curve fitting
+lmfit==1.3.4
+tqdm==4.68.1
+
+# Optics / thin-film
+tmm==0.2.0
+
+# Origin automation (Data processing/Python with origin)
+originpro==1.1.15
+
+# Excel automation (TRPL RISC bridge)
+xlwings==0.36.2
+
+# Image handling (Save any pic / Save as 4K)
+pillow==12.2.0
+
+# Deep-learning super-resolution (Save as 4K.py)
+torch==2.12.0
+torchvision==0.27.0
+transformers==5.10.2
+
+# MATLAB v7.3 file loading (mat_to_CSV.py)
+mat73==0.65
+
+# Instrument control (ns-TA)
+PyVISA==1.16.2
+PyMeasure==0.16.0
+pyserial==3.5
+pyusb==1.3.1
+seabreeze==2.11.0

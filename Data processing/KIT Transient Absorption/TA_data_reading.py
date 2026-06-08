@@ -1,21 +1,31 @@
+import json
 from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox
 
 import numpy as np
 import pandas as pd
+import customtkinter as ctk
+import matplotlib
+import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 
+matplotlib.use("TkAgg")
+
+DARK_BG = "#1a1a1a"
+PANEL_BG = "#2b2b2b"
+ACCENT = "#2CC985"
+ACCENT_RED = "#C92C45"
+
 
 DEFAULT_DATA_FILE = Path(
-    r"C:\My files\Google drive sync\KIT\21_L21_Exp2_00_combined_split.xlsx"
+    r"C:\My files\Google drive sync\KIT\21_L21_Exp2_00_combined_split.csv"
 )
 
 AVERAGE_WINDOWS = {
-    "10 ps": 10e-12,
-    "1 ns": 1e-9,
-    "2 ns": 2e-9,
+    "+/-1 col (3 total)": 1,
+    "+/-2 col (5 total)": 2,
 }
 
 WAVELENGTH_WINDOWS = {
@@ -27,6 +37,9 @@ PLOT_MODES = (
     "Time -> spectrum",
     "Wavelength -> trace",
 )
+
+DEFAULT_SPECTRUM_X_MIN_NM = 460.0
+DEFAULT_SPECTRUM_X_MAX_NM = 1000.0
 
 
 def enable_high_dpi_awareness() -> None:
@@ -52,7 +65,13 @@ class TAData:
         self.load(path)
 
     def load(self, path: Path) -> None:
-        raw = pd.read_excel(path, header=None, engine="openpyxl")
+        # Matches the grid written by mat_to_CSV.py: corner label
+        # "Wavelength (nm) \ Time (s)", first row = times (s), first column =
+        # wavelengths (nm), body = dT/T matrix [wavelengths x times].
+        if path.suffix.lower() == ".csv":
+            raw = pd.read_csv(path, header=None)
+        else:
+            raw = pd.read_excel(path, header=None, engine="openpyxl")
         numeric = raw.apply(pd.to_numeric, errors="coerce")
 
         times = numeric.iloc[0, 1:].to_numpy(dtype=float)
@@ -113,16 +132,15 @@ class TAData:
         )
 
     def averaged_spectrum(
-        self, requested_time_ns: float, half_window_s: float
+        self, requested_time_ns: float, half_columns: int
     ) -> tuple[np.ndarray, np.ndarray, float, int, bool]:
         requested_time_s = requested_time_ns * 1e-9
         center_idx = int(np.nanargmin(np.abs(self.times_s - requested_time_s)))
         nearest_time_s = float(self.times_s[center_idx])
 
-        selected = np.where(np.abs(self.times_s - requested_time_s) <= half_window_s)[0]
-        used_nearest_only = selected.size == 0
-        if used_nearest_only:
-            selected = np.array([center_idx])
+        low = max(0, center_idx - int(half_columns))
+        high = min(self.times_s.size, center_idx + int(half_columns) + 1)
+        selected = np.arange(low, high)
 
         spectrum = np.nanmean(self.signal[:, selected], axis=1)
         return (
@@ -130,7 +148,7 @@ class TAData:
             spectrum,
             nearest_time_s * 1e9,
             int(selected.size),
-            used_nearest_only,
+            False,
         )
 
     def averaged_trace(
@@ -158,10 +176,11 @@ class TAData:
         )
 
 
-class TAViewer(tk.Tk):
+class TAViewer(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title("KIT TA Data Reading")
+        ctk.set_appearance_mode("Dark")
         self._configure_display()
 
         self.data: TAData | None = None
@@ -173,9 +192,15 @@ class TAViewer(tk.Tk):
         self.file_var = tk.StringVar(value=str(DEFAULT_DATA_FILE))
         self.mode_var = tk.StringVar(value=PLOT_MODES[0])
         self.time_var = tk.StringVar(value="0")
-        self.window_var = tk.StringVar(value="1 ns")
+        self.window_var = tk.StringVar(value="+/-1 col (3 total)")
         self.wavelength_var = tk.StringVar(value="500")
         self.wavelength_window_var = tk.StringVar(value="2 nm")
+        self.x_min_var = tk.StringVar(value=f"{DEFAULT_SPECTRUM_X_MIN_NM:g}")
+        self.x_max_var = tk.StringVar(value=f"{DEFAULT_SPECTRUM_X_MAX_NM:g}")
+        self.y_min_var = tk.StringVar(value="")
+        self.y_max_var = tk.StringVar(value="")
+        self.baseline_step_var = tk.StringVar(value="1e-4")
+        self.curve_select_var = tk.StringVar(value="No curves")
         self.status_var = tk.StringVar(value="Load a data file to begin.")
 
         self._build_ui()
@@ -186,141 +211,273 @@ class TAViewer(tk.Tk):
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         scale = max(1.0, min(2.0, screen_width / 1920))
-        self.tk.call("tk", "scaling", scale)
-
-        style = ttk.Style(self)
-        base_font = max(10, int(10 * scale))
-        heading_font = max(11, int(11 * scale))
-        style.configure(".", font=("Segoe UI", base_font))
-        style.configure("TButton", padding=(8, 5))
-        style.configure("TLabelframe.Label", font=("Segoe UI", heading_font, "bold"))
         self.ui_scale = scale
-        self.plot_font_size = max(10, int(10 * scale))
+        self.plot_font_size = max(5, int(5 * scale))
+        self.secondary_font_size = max(4, int(4 * scale))
 
         width = min(max(1200, int(screen_width * 0.72)), 2200)
         height = min(max(820, int(screen_height * 0.76)), 1400)
         self.geometry(f"{width}x{height}")
 
     def _build_ui(self) -> None:
-        main = ttk.Frame(self, padding=14)
-        main.pack(fill=tk.BOTH, expand=True)
-
-        controls = ttk.LabelFrame(main, text="Controls", padding=10)
-        controls.pack(fill=tk.X)
-
-        ttk.Label(controls, text="Data file").grid(row=0, column=0, sticky=tk.W)
-        file_entry = ttk.Entry(controls, textvariable=self.file_var)
-        file_entry.grid(row=0, column=1, columnspan=5, sticky=tk.EW, padx=8)
-        ttk.Button(controls, text="Browse", command=self._browse_file).grid(
-            row=0, column=6, padx=4
+        sidebar = ctk.CTkScrollableFrame(
+            self,
+            width=340,
+            label_text="Controls",
+            scrollbar_button_color=ACCENT,
+            scrollbar_button_hover_color="#249b6b",
         )
-        ttk.Button(controls, text="Load", command=self._load_file_from_entry).grid(
-            row=0, column=7, padx=4
-        )
+        sidebar.pack(side="left", fill="y", padx=10, pady=10)
 
-        ttk.Label(controls, text="Plot mode").grid(row=1, column=0, sticky=tk.W, pady=10)
-        ttk.Combobox(
-            controls,
-            textvariable=self.mode_var,
-            values=PLOT_MODES,
-            state="readonly",
-            width=22,
-        ).grid(row=1, column=1, sticky=tk.W, padx=8, pady=10)
-        self.mode_var.trace_add("write", lambda *_args: self._mode_changed())
-
-        ttk.Button(controls, text="Add Curve", command=self.add_curve).grid(
-            row=1, column=6, padx=4, pady=10
+        # --- Data file ---
+        ctk.CTkLabel(sidebar, text="Data file", anchor="w").pack(
+            fill="x", padx=10, pady=(10, 2)
         )
-        ttk.Button(controls, text="Clear Curves", command=self.clear_curves).grid(
-            row=1, column=7, padx=4, pady=10
+        self.file_entry = ctk.CTkEntry(sidebar, textvariable=self.file_var)
+        self.file_entry.pack(fill="x", padx=10, pady=2)
+        ctk.CTkButton(sidebar, text="Browse", command=self._browse_file).pack(
+            fill="x", padx=10, pady=4
+        )
+        ctk.CTkButton(sidebar, text="Load", command=self._load_file_from_entry).pack(
+            fill="x", padx=10, pady=(0, 12)
         )
 
-        ttk.Label(controls, text="Time (ns)").grid(row=2, column=0, sticky=tk.W, pady=6)
-        time_entry = ttk.Entry(controls, textvariable=self.time_var, width=14)
-        time_entry.grid(row=2, column=1, sticky=tk.W, padx=8, pady=6)
+        # --- Plot mode ---
+        ctk.CTkLabel(sidebar, text="Plot mode", anchor="w").pack(
+            fill="x", padx=10, pady=(6, 2)
+        )
+        ctk.CTkOptionMenu(
+            sidebar,
+            variable=self.mode_var,
+            values=list(PLOT_MODES),
+            command=lambda _value: self._mode_changed(),
+        ).pack(fill="x", padx=10, pady=2)
+
+        ctk.CTkButton(
+            sidebar, text="Add Curve", command=self.add_curve, fg_color=ACCENT,
+            hover_color="#249b6b", text_color="#0d0d0d",
+        ).pack(fill="x", padx=10, pady=(12, 4))
+        self.curve_select_menu = ctk.CTkOptionMenu(
+            sidebar,
+            variable=self.curve_select_var,
+            values=["No curves"],
+        )
+        self.curve_select_menu.pack(fill="x", padx=10, pady=(0, 4))
+        ctk.CTkButton(
+            sidebar,
+            text="Delete Selected Curve",
+            command=self.delete_selected_curve,
+            fg_color=ACCENT_RED,
+            hover_color="#9b2436",
+        ).pack(fill="x", padx=10, pady=(0, 4))
+        ctk.CTkButton(
+            sidebar, text="Clear Curves", command=self.clear_curves,
+            fg_color="gray30", hover_color="gray25",
+        ).pack(fill="x", padx=10, pady=(0, 12))
+
+        # --- Time controls ---
+        ctk.CTkLabel(sidebar, text="Time (ns)", anchor="w").pack(
+            fill="x", padx=10, pady=(6, 2)
+        )
+        time_entry = ctk.CTkEntry(sidebar, textvariable=self.time_var)
+        time_entry.pack(fill="x", padx=10, pady=2)
         time_entry.bind("<Return>", lambda _event: self.add_curve())
-        ttk.Label(controls, text="Time average (+/-)").grid(
-            row=2, column=2, sticky=tk.W, padx=(12, 4), pady=6
+        self.time_scale = ctk.CTkSlider(
+            sidebar, from_=0, to=1, command=self._scale_changed
         )
-        ttk.Combobox(
-            controls,
-            textvariable=self.window_var,
+        self.time_scale.pack(fill="x", padx=10, pady=4)
+
+        ctk.CTkLabel(sidebar, text="Time average (columns)", anchor="w").pack(
+            fill="x", padx=10, pady=(2, 2)
+        )
+        ctk.CTkOptionMenu(
+            sidebar,
+            variable=self.window_var,
             values=list(AVERAGE_WINDOWS),
-            state="readonly",
-            width=10,
-        ).grid(row=2, column=3, sticky=tk.W, padx=8, pady=6)
+        ).pack(fill="x", padx=10, pady=(0, 12))
 
-        ttk.Label(controls, text="Wavelength (nm)").grid(
-            row=3, column=0, sticky=tk.W, pady=6
+        # --- Wavelength controls ---
+        ctk.CTkLabel(sidebar, text="Wavelength (nm)", anchor="w").pack(
+            fill="x", padx=10, pady=(6, 2)
         )
-        wavelength_entry = ttk.Entry(
-            controls, textvariable=self.wavelength_var, width=14
-        )
-        wavelength_entry.grid(row=3, column=1, sticky=tk.W, padx=8, pady=6)
+        wavelength_entry = ctk.CTkEntry(sidebar, textvariable=self.wavelength_var)
+        wavelength_entry.pack(fill="x", padx=10, pady=2)
         wavelength_entry.bind("<Return>", lambda _event: self.add_curve())
-        ttk.Label(controls, text="Wavelength average (+/-)").grid(
-            row=3, column=2, sticky=tk.W, padx=(12, 4), pady=6
+        self.wavelength_scale = ctk.CTkSlider(
+            sidebar, from_=0, to=1, command=self._wavelength_scale_changed
         )
-        ttk.Combobox(
-            controls,
-            textvariable=self.wavelength_window_var,
+        self.wavelength_scale.pack(fill="x", padx=10, pady=4)
+
+        ctk.CTkLabel(sidebar, text="Wavelength average (+/-)", anchor="w").pack(
+            fill="x", padx=10, pady=(2, 2)
+        )
+        ctk.CTkOptionMenu(
+            sidebar,
+            variable=self.wavelength_window_var,
             values=list(WAVELENGTH_WINDOWS),
-            state="readonly",
-            width=10,
-        ).grid(row=3, column=3, sticky=tk.W, padx=8, pady=6)
-        controls.columnconfigure(5, weight=1)
+        ).pack(fill="x", padx=10, pady=(0, 12))
 
-        self.time_scale = tk.Scale(
-            controls,
-            from_=0,
-            to=1,
-            orient=tk.HORIZONTAL,
-            resolution=0.01,
-            showvalue=False,
-            command=self._scale_changed,
+        # --- Axis controls ---
+        ctk.CTkLabel(sidebar, text="Axis range (blank = auto)", anchor="w").pack(
+            fill="x", padx=10, pady=(6, 2)
         )
-        self.time_scale.grid(
-            row=4, column=0, columnspan=8, sticky=tk.EW, pady=(4, 2)
-        )
+        axis_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
+        axis_frame.pack(fill="x", padx=10, pady=2)
+        axis_frame.grid_columnconfigure((0, 1), weight=1)
 
-        self.wavelength_scale = tk.Scale(
-            controls,
-            from_=0,
-            to=1,
-            orient=tk.HORIZONTAL,
-            resolution=0.1,
-            showvalue=False,
-            command=self._wavelength_scale_changed,
+        ctk.CTkLabel(axis_frame, text="X min", anchor="w").grid(
+            row=0, column=0, sticky="ew", padx=(0, 4), pady=(0, 2)
         )
-        self.wavelength_scale.grid(
-            row=5, column=0, columnspan=8, sticky=tk.EW, pady=(2, 4)
+        ctk.CTkLabel(axis_frame, text="X max", anchor="w").grid(
+            row=0, column=1, sticky="ew", padx=(4, 0), pady=(0, 2)
         )
+        x_min_entry = ctk.CTkEntry(axis_frame, textvariable=self.x_min_var)
+        x_max_entry = ctk.CTkEntry(axis_frame, textvariable=self.x_max_var)
+        x_min_entry.grid(row=1, column=0, sticky="ew", padx=(0, 4), pady=(0, 6))
+        x_max_entry.grid(row=1, column=1, sticky="ew", padx=(4, 0), pady=(0, 6))
 
-        ttk.Label(main, textvariable=self.status_var, wraplength=1800).pack(
-            fill=tk.X, pady=(8, 0)
+        ctk.CTkLabel(axis_frame, text="Y min", anchor="w").grid(
+            row=2, column=0, sticky="ew", padx=(0, 4), pady=(0, 2)
         )
+        ctk.CTkLabel(axis_frame, text="Y max", anchor="w").grid(
+            row=2, column=1, sticky="ew", padx=(4, 0), pady=(0, 2)
+        )
+        y_min_entry = ctk.CTkEntry(axis_frame, textvariable=self.y_min_var)
+        y_max_entry = ctk.CTkEntry(axis_frame, textvariable=self.y_max_var)
+        y_min_entry.grid(row=3, column=0, sticky="ew", padx=(0, 4), pady=(0, 6))
+        y_max_entry.grid(row=3, column=1, sticky="ew", padx=(4, 0), pady=(0, 6))
 
-        plot_frame = ttk.Frame(main)
-        plot_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+        for entry in (x_min_entry, x_max_entry, y_min_entry, y_max_entry):
+            entry.bind("<Return>", lambda _event: self.apply_axis_limits())
 
+        ctk.CTkButton(
+            sidebar, text="Apply Axis Range", command=self.apply_axis_limits
+        ).pack(fill="x", padx=10, pady=(4, 4))
+        ctk.CTkButton(
+            sidebar,
+            text="Auto Y Axis",
+            command=self.auto_y_axis_limits,
+            fg_color="gray30",
+            hover_color="gray25",
+        ).pack(fill="x", padx=10, pady=(0, 4))
+        ctk.CTkButton(
+            sidebar,
+            text="Auto Axis Range",
+            command=self.auto_axis_limits,
+            fg_color="gray30",
+            hover_color="gray25",
+        ).pack(fill="x", padx=10, pady=(0, 12))
+
+        # --- Data transform ---
+        ctk.CTkLabel(sidebar, text="Data transform", anchor="w").pack(
+            fill="x", padx=10, pady=(6, 2)
+        )
+        ctk.CTkButton(
+            sidebar, text="Flip Y (x -1)", command=self.flip_y_axis
+        ).pack(fill="x", padx=10, pady=(0, 6))
+
+        ctk.CTkLabel(sidebar, text="Baseline shift step", anchor="w").pack(
+            fill="x", padx=10, pady=(2, 2)
+        )
+        baseline_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
+        baseline_frame.pack(fill="x", padx=10, pady=(0, 12))
+        baseline_frame.grid_columnconfigure(0, weight=1)
+
+        baseline_entry = ctk.CTkEntry(
+            baseline_frame, textvariable=self.baseline_step_var
+        )
+        baseline_entry.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ctk.CTkButton(
+            baseline_frame,
+            text="\u25b2",
+            width=44,
+            command=lambda: self.shift_baseline(1),
+        ).grid(row=0, column=1, padx=2)
+        ctk.CTkButton(
+            baseline_frame,
+            text="\u25bc",
+            width=44,
+            command=lambda: self.shift_baseline(-1),
+        ).grid(row=0, column=2, padx=(2, 0))
+
+        # --- Settings ---
+        ctk.CTkLabel(sidebar, text="Settings", anchor="w").pack(
+            fill="x", padx=10, pady=(6, 2)
+        )
+        ctk.CTkButton(
+            sidebar, text="Save JSON Settings", command=self.save_settings
+        ).pack(fill="x", padx=10, pady=(0, 4))
+        ctk.CTkButton(
+            sidebar,
+            text="Read JSON Settings",
+            command=self.read_settings,
+            fg_color="gray30",
+            hover_color="gray25",
+        ).pack(fill="x", padx=10, pady=(0, 12))
+
+        # --- Save ---
+        ctk.CTkButton(
+            sidebar,
+            text="Save PNG + XLSX",
+            command=self.save_outputs,
+            fg_color=ACCENT,
+            hover_color="#249b6b",
+            text_color="#0d0d0d",
+        ).pack(fill="x", padx=10, pady=(0, 12))
+
+        # --- Status ---
+        self.status_label = ctk.CTkLabel(
+            sidebar,
+            textvariable=self.status_var,
+            justify="left",
+            anchor="w",
+            wraplength=280,
+            text_color=ACCENT,
+        )
+        self.status_label.pack(fill="x", padx=10, pady=(8, 12))
+
+        # --- Plot area ---
+        plot_frame = ctk.CTkFrame(self)
+        plot_frame.pack(side="right", fill="both", expand=True, padx=(0, 10), pady=10)
+
+        plt.style.use("dark_background")
         self.figure = Figure(figsize=(10, 6), dpi=110)
+        self.figure.patch.set_facecolor(DARK_BG)
         self.ax = self.figure.add_subplot(111)
+        self.ax.set_facecolor(DARK_BG)
         self._reset_axes()
 
         self.canvas = FigureCanvasTkAgg(self.figure, master=plot_frame)
         self.canvas.draw()
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=(10, 0))
         self.canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
         self.canvas.mpl_connect("axes_leave_event", self._hide_cursor)
 
-        toolbar = NavigationToolbar2Tk(self.canvas, plot_frame)
+        toolbar = NavigationToolbar2Tk(self.canvas, plot_frame, pack_toolbar=False)
         toolbar.update()
+        try:
+            toolbar.config(background=PANEL_BG)
+            for child in toolbar.winfo_children():
+                try:
+                    child.config(background=PANEL_BG, foreground="white")
+                except tk.TclError:
+                    try:
+                        child.config(background=PANEL_BG)
+                    except tk.TclError:
+                        pass
+        except tk.TclError:
+            pass
+        toolbar.pack(fill="x", padx=10, pady=(4, 10))
 
     def _browse_file(self) -> None:
         selected = filedialog.askopenfilename(
-            title="Choose split TA data file",
+            title="Choose TA data file",
             initialdir=str(DEFAULT_DATA_FILE.parent),
-            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+            filetypes=[
+                ("CSV files", "*.csv"),
+                ("Excel files", "*.xlsx"),
+                ("All files", "*.*"),
+            ],
         )
         if selected:
             self.file_var.set(selected)
@@ -341,12 +498,12 @@ class TAViewer(tk.Tk):
         self.time_scale.configure(
             from_=self.data.min_time_ns,
             to=self.data.max_time_ns,
-            resolution=0.01,
+            number_of_steps=1000,
         )
         self.wavelength_scale.configure(
             from_=self.data.min_wavelength_nm,
             to=self.data.max_wavelength_nm,
-            resolution=0.1,
+            number_of_steps=1000,
         )
         start_ns = 0.0
         if not self.data.min_time_ns <= start_ns <= self.data.max_time_ns:
@@ -376,9 +533,309 @@ class TAViewer(tk.Tk):
     def _wavelength_scale_changed(self, value: str) -> None:
         self.wavelength_var.set(f"{float(value):.6g}")
 
+    def apply_axis_limits(self) -> None:
+        if not self._apply_axis_limits_to_axes():
+            return
+        self.canvas.draw_idle()
+        self.status_var.set("Applied axis range. Leave a field blank to autoscale it.")
+
+    def auto_axis_limits(self) -> None:
+        self.x_min_var.set("")
+        self.x_max_var.set("")
+        self.y_min_var.set("")
+        self.y_max_var.set("")
+        self._autoscale_to_data_lines()
+        self.canvas.draw_idle()
+        self.status_var.set("Restored automatic axis range.")
+
+    def auto_y_axis_limits(self) -> None:
+        data_limits = self._data_limits(x_limits=self.ax.get_xlim())
+        if data_limits is None:
+            messagebox.showinfo(
+                "Auto Y Axis",
+                "No plotted data points are inside the current x-axis range.",
+            )
+            return
+
+        self.y_min_var.set("")
+        self.y_max_var.set("")
+        _auto_xlim, auto_ylim = data_limits
+        if not self._apply_axis_limits_to_axes(auto_ylim=auto_ylim):
+            return
+        self.canvas.draw_idle()
+        self.status_var.set("Restored automatic y-axis range.")
+
+    def flip_y_axis(self) -> None:
+        lines = self._data_lines()
+        if not lines:
+            messagebox.showwarning("No data", "Add at least one curve first.")
+            return
+        for line in lines:
+            line.set_ydata(-np.asarray(line.get_ydata(), dtype=float))
+        self._hide_cursor()
+        self.canvas.draw_idle()
+        self.status_var.set("Flipped data along the y-axis (x -1).")
+
+    def shift_baseline(self, direction: int) -> None:
+        lines = self._data_lines()
+        if not lines:
+            messagebox.showwarning("No data", "Add at least one curve first.")
+            return
+        try:
+            step = float(self.baseline_step_var.get())
+        except ValueError:
+            messagebox.showerror(
+                "Invalid step", "Baseline shift step must be numeric."
+            )
+            return
+
+        offset = direction * step
+        for line in lines:
+            line.set_ydata(np.asarray(line.get_ydata(), dtype=float) + offset)
+        self._hide_cursor()
+        self.canvas.draw_idle()
+        self.status_var.set(f"Shifted baseline by {offset:+.6g}.")
+
+    def save_settings(self) -> None:
+        current_file = self.file_var.get().strip()
+        initial_dir = str(Path(current_file).parent) if current_file else None
+        settings_path = filedialog.asksaveasfilename(
+            title="Save JSON settings",
+            initialdir=initial_dir,
+            defaultextension=".json",
+            filetypes=[("JSON settings", "*.json"), ("All files", "*.*")],
+        )
+        if not settings_path:
+            return
+
+        settings = self._current_settings()
+        try:
+            with Path(settings_path).open("w", encoding="utf-8") as file:
+                json.dump(settings, file, indent=2)
+        except Exception as exc:
+            messagebox.showerror("Save settings failed", str(exc))
+            return
+
+        self.status_var.set(f"Saved settings to {Path(settings_path).name}.")
+
+    def read_settings(self) -> None:
+        current_file = self.file_var.get().strip()
+        initial_dir = str(Path(current_file).parent) if current_file else None
+        settings_path = filedialog.askopenfilename(
+            title="Read JSON settings",
+            initialdir=initial_dir,
+            filetypes=[("JSON settings", "*.json"), ("All files", "*.*")],
+        )
+        if not settings_path:
+            return
+
+        try:
+            with Path(settings_path).open("r", encoding="utf-8") as file:
+                settings = json.load(file)
+            if not isinstance(settings, dict):
+                raise ValueError("Settings file must contain a JSON object.")
+            self._apply_settings(settings)
+        except Exception as exc:
+            messagebox.showerror("Read settings failed", str(exc))
+            return
+
+        self.status_var.set(f"Read settings from {Path(settings_path).name}.")
+
+    def _current_settings(self) -> dict[str, str]:
+        return {
+            "data_file": self.file_var.get(),
+            "plot_mode": self.mode_var.get(),
+            "time_ns": self.time_var.get(),
+            "time_average": self.window_var.get(),
+            "wavelength_nm": self.wavelength_var.get(),
+            "wavelength_average": self.wavelength_window_var.get(),
+            "x_min": self.x_min_var.get(),
+            "x_max": self.x_max_var.get(),
+            "y_min": self.y_min_var.get(),
+            "y_max": self.y_max_var.get(),
+            "baseline_step": self.baseline_step_var.get(),
+        }
+
+    def _apply_settings(self, settings: dict) -> None:
+        data_file = str(settings.get("data_file", "")).strip()
+        if data_file:
+            self.file_var.set(data_file)
+            data_path = Path(data_file)
+            if data_path.exists():
+                self._load_file(data_path)
+
+        plot_mode = str(settings.get("plot_mode", self.mode_var.get()))
+        mode_changed = plot_mode in PLOT_MODES and plot_mode != self.mode_var.get()
+        if plot_mode in PLOT_MODES:
+            self.mode_var.set(plot_mode)
+            if mode_changed:
+                self.clear_curves()
+
+        self._set_if_valid_option(self.window_var, settings, "time_average", AVERAGE_WINDOWS)
+        self._set_if_valid_option(
+            self.wavelength_window_var,
+            settings,
+            "wavelength_average",
+            WAVELENGTH_WINDOWS,
+        )
+
+        for key, variable in (
+            ("time_ns", self.time_var),
+            ("wavelength_nm", self.wavelength_var),
+            ("x_min", self.x_min_var),
+            ("x_max", self.x_max_var),
+            ("y_min", self.y_min_var),
+            ("y_max", self.y_max_var),
+            ("baseline_step", self.baseline_step_var),
+        ):
+            if key in settings:
+                variable.set(str(settings[key]))
+
+        self._sync_sliders_to_entries()
+        self._reset_axes()
+        self.apply_axis_limits()
+
+    @staticmethod
+    def _set_if_valid_option(
+        variable: tk.StringVar, settings: dict, key: str, valid_options: dict
+    ) -> None:
+        value = settings.get(key)
+        if value in valid_options:
+            variable.set(str(value))
+
+    def _sync_sliders_to_entries(self) -> None:
+        if self.data is None:
+            return
+        try:
+            time_ns = float(self.time_var.get())
+            if self.data.min_time_ns <= time_ns <= self.data.max_time_ns:
+                self.time_scale.set(time_ns)
+        except ValueError:
+            pass
+        try:
+            wavelength_nm = float(self.wavelength_var.get())
+            if self.data.min_wavelength_nm <= wavelength_nm <= self.data.max_wavelength_nm:
+                self.wavelength_scale.set(wavelength_nm)
+        except ValueError:
+            pass
+
+    def save_outputs(self) -> None:
+        lines = self._data_lines()
+        if not lines:
+            messagebox.showwarning(
+                "Nothing to save", "Add at least one curve before saving."
+            )
+            return
+
+        current_file = self.file_var.get().strip()
+        initial_dir = str(Path(current_file).parent) if current_file else None
+        base_path = filedialog.asksaveasfilename(
+            title="Save graph (PNG) and data (XLSX)",
+            initialdir=initial_dir,
+            defaultextension=".png",
+            filetypes=[("PNG image", "*.png"), ("All files", "*.*")],
+        )
+        if not base_path:
+            return
+
+        stem = Path(base_path).with_suffix("")
+        png_path = stem.with_suffix(".png")
+        xlsx_path = stem.with_suffix(".xlsx")
+
+        try:
+            self.figure.savefig(
+                png_path, dpi=400, facecolor=self.figure.get_facecolor()
+            )
+            self._save_data_workbook(xlsx_path, lines)
+        except Exception as exc:
+            messagebox.showerror("Save failed", str(exc))
+            return
+
+        self.status_var.set(
+            f"Saved {png_path.name} (400 dpi) and {xlsx_path.name}."
+        )
+
+    def _save_data_workbook(self, xlsx_path: Path, lines) -> None:
+        x_label = self.ax.get_xlabel() or "X"
+        y_label = self.ax.get_ylabel() or "Y"
+        x_min, x_max = self.ax.get_xlim()
+        y_min, y_max = self.ax.get_ylim()
+
+        info_df = pd.DataFrame(
+            {
+                "Property": [
+                    "Plot title",
+                    "X axis title",
+                    "Y axis title",
+                    "X min",
+                    "X max",
+                    "Y min",
+                    "Y max",
+                ],
+                "Value": [
+                    self.ax.get_title(),
+                    x_label,
+                    y_label,
+                    x_min,
+                    x_max,
+                    y_min,
+                    y_max,
+                ],
+            }
+        )
+
+        shared_x = None
+        same_x = True
+        for line in lines:
+            x_data = np.asarray(line.get_xdata(), dtype=float)
+            if shared_x is None:
+                shared_x = x_data
+            elif shared_x.shape != x_data.shape or not np.allclose(
+                shared_x, x_data, equal_nan=True
+            ):
+                same_x = False
+                break
+
+        if same_x and shared_x is not None:
+            data = {x_label: shared_x}
+            for line in lines:
+                data[line.get_label()] = np.asarray(line.get_ydata(), dtype=float)
+            data_df = pd.DataFrame(data)
+        else:
+            frames = []
+            for line in lines:
+                frames.append(
+                    pd.DataFrame(
+                        {
+                            f"{line.get_label()} | {x_label}": np.asarray(
+                                line.get_xdata(), dtype=float
+                            ),
+                            f"{line.get_label()} | {y_label}": np.asarray(
+                                line.get_ydata(), dtype=float
+                            ),
+                        }
+                    )
+                )
+            data_df = pd.concat(frames, axis=1)
+
+        with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
+            info_df.to_excel(writer, sheet_name="Plot info", index=False)
+            data_df.to_excel(writer, sheet_name="Data", index=False)
+
     def _mode_changed(self) -> None:
+        self._set_default_axis_limits_for_mode()
         self.clear_curves()
         self.status_var.set(f"Switched to {self.mode_var.get()} mode.")
+
+    def _set_default_axis_limits_for_mode(self) -> None:
+        if self.mode_var.get() == PLOT_MODES[0]:
+            self.x_min_var.set(f"{DEFAULT_SPECTRUM_X_MIN_NM:g}")
+            self.x_max_var.set(f"{DEFAULT_SPECTRUM_X_MAX_NM:g}")
+        else:
+            self.x_min_var.set("")
+            self.x_max_var.set("")
+        self.y_min_var.set("")
+        self.y_max_var.set("")
 
     def add_curve(self) -> None:
         if self.data is None:
@@ -400,7 +857,7 @@ class TAViewer(tk.Tk):
             return
 
         window_label = self.window_var.get()
-        half_window_s = AVERAGE_WINDOWS[window_label]
+        half_columns = AVERAGE_WINDOWS[window_label]
 
         (
             wavelengths,
@@ -408,7 +865,7 @@ class TAViewer(tk.Tk):
             nearest_time_ns,
             n_columns,
             used_nearest_only,
-        ) = self.data.averaged_spectrum(requested_time_ns, half_window_s)
+        ) = self.data.averaged_spectrum(requested_time_ns, half_columns)
 
         self.curve_count += 1
         label = (
@@ -416,9 +873,16 @@ class TAViewer(tk.Tk):
             f"{window_label}, {n_columns} cols"
         )
         self.ax.plot(wavelengths, spectrum, label=label)
-        self.ax.legend(loc="best", fontsize=max(9, int(9 * self.ui_scale)))
+        self.ax.legend(
+            loc="best",
+            fontsize=self.secondary_font_size,
+            facecolor=DARK_BG,
+            edgecolor="white",
+            labelcolor="white",
+        )
         self._autoscale_to_data_lines()
         self._init_cursor_artists()
+        self._refresh_curve_selector(label)
         self.canvas.draw_idle()
 
         fallback_note = " No time point fell inside the window; used nearest column." if used_nearest_only else ""
@@ -456,9 +920,16 @@ class TAViewer(tk.Tk):
             f"{window_label}, {n_rows} rows"
         )
         self.ax.plot(times_ns, trace, marker="o", markersize=3, linewidth=1.3, label=label)
-        self.ax.legend(loc="best", fontsize=max(9, int(9 * self.ui_scale)))
+        self.ax.legend(
+            loc="best",
+            fontsize=self.secondary_font_size,
+            facecolor=DARK_BG,
+            edgecolor="white",
+            labelcolor="white",
+        )
         self._autoscale_to_data_lines()
         self._init_cursor_artists()
+        self._refresh_curve_selector(label)
         self.canvas.draw_idle()
 
         fallback_note = (
@@ -479,33 +950,90 @@ class TAViewer(tk.Tk):
         self.cursor_annotation = None
         self._reset_axes()
         self.curve_count = 0
+        self._refresh_curve_selector()
         self.canvas.draw_idle()
 
+    def delete_selected_curve(self) -> None:
+        selected_label = self.curve_select_var.get()
+        for line in self._data_lines():
+            if line.get_label() == selected_label:
+                line.remove()
+                break
+        else:
+            messagebox.showwarning(
+                "No curve selected", "Please select a curve to delete first."
+            )
+            return
+
+        self._hide_cursor()
+        self._refresh_legend()
+        if self._data_lines():
+            self._autoscale_to_data_lines()
+        else:
+            self._reset_axes()
+        self._refresh_curve_selector()
+        self.canvas.draw_idle()
+        self.status_var.set(f"Deleted curve: {selected_label}")
+
+    def _refresh_curve_selector(self, selected_label: str | None = None) -> None:
+        labels = [line.get_label() for line in self._data_lines()]
+        values = labels if labels else ["No curves"]
+        self.curve_select_menu.configure(values=values)
+        if selected_label in labels:
+            self.curve_select_var.set(selected_label)
+        elif labels:
+            self.curve_select_var.set(labels[-1])
+        else:
+            self.curve_select_var.set("No curves")
+
+    def _refresh_legend(self) -> None:
+        lines = self._data_lines()
+        legend = self.ax.get_legend()
+        if not lines:
+            if legend is not None:
+                legend.remove()
+            return
+
+        self.ax.legend(
+            loc="best",
+            fontsize=self.secondary_font_size,
+            facecolor=DARK_BG,
+            edgecolor="white",
+            labelcolor="white",
+        )
+
     def _reset_axes(self) -> None:
+        self.ax.set_facecolor(DARK_BG)
         if self.mode_var.get() == PLOT_MODES[1]:
-            self.ax.set_xlabel("Time (ns)", fontsize=self.plot_font_size)
-            self.ax.set_ylabel("Averaged signal", fontsize=self.plot_font_size)
+            self.ax.set_xlabel("Time (ns)", fontsize=self.plot_font_size, color="white")
+            self.ax.set_ylabel(
+                "Ave Delta T/T", fontsize=self.plot_font_size, color="white"
+            )
             self.ax.set_title(
-                "Averaged TA trace", fontsize=self.plot_font_size + 2
+                "Averaged TA trace", fontsize=self.plot_font_size + 2, color="white"
             )
         else:
-            self.ax.set_xlabel("Wavelength (nm)", fontsize=self.plot_font_size)
-            self.ax.set_ylabel("Averaged signal", fontsize=self.plot_font_size)
-            self.ax.set_title(
-                "Averaged TA spectrum", fontsize=self.plot_font_size + 2
+            self.ax.set_xlabel(
+                "Wavelength (nm)", fontsize=self.plot_font_size, color="white"
             )
-        self.ax.tick_params(labelsize=max(9, int(9 * self.ui_scale)))
-        self.ax.grid(True, alpha=0.25)
+            self.ax.set_ylabel(
+                "Ave Delta T/T", fontsize=self.plot_font_size, color="white"
+            )
+            self.ax.set_title(
+                "Averaged TA spectrum", fontsize=self.plot_font_size + 2, color="white"
+            )
+        self.ax.tick_params(labelsize=self.secondary_font_size, colors="white")
+        self.ax.grid(True, linestyle=":", alpha=0.3)
 
     def _init_cursor_artists(self) -> None:
         if self.cursor_line is not None:
             return
 
         self.cursor_line = self.ax.axvline(
-            color="0.35",
+            color="white",
             linestyle="--",
             linewidth=0.9,
-            alpha=0.7,
+            alpha=0.5,
             visible=False,
             label="_cursor_line",
         )
@@ -514,7 +1042,7 @@ class TAViewer(tk.Tk):
             [],
             marker="o",
             markersize=max(5, int(5 * self.ui_scale)),
-            color="black",
+            color="white",
             markerfacecolor="yellow",
             visible=False,
             zorder=10,
@@ -525,9 +1053,10 @@ class TAViewer(tk.Tk):
             xy=(0, 0),
             xytext=(15, 15),
             textcoords="offset points",
-            fontsize=max(9, int(9 * self.ui_scale)),
-            bbox={"boxstyle": "round,pad=0.35", "fc": "white", "ec": "0.3", "alpha": 0.9},
-            arrowprops={"arrowstyle": "->", "color": "0.3"},
+            fontsize=self.secondary_font_size,
+            color="white",
+            bbox={"boxstyle": "round,pad=0.35", "fc": PANEL_BG, "ec": "white", "alpha": 0.9},
+            arrowprops={"arrowstyle": "->", "color": "white"},
             visible=False,
             zorder=11,
         )
@@ -611,23 +1140,93 @@ class TAViewer(tk.Tk):
         ]
 
     def _autoscale_to_data_lines(self) -> None:
+        data_limits = self._data_limits()
+        if data_limits is None:
+            return
+
+        auto_xlim, auto_ylim = data_limits
+        if not self._apply_axis_limits_to_axes(auto_xlim=auto_xlim, auto_ylim=auto_ylim):
+            return
+
+        # Refine the y-axis to fit only the data inside the now-current x window
+        # (respects manual x range), so adding a curve does not require a manual
+        # "Auto Y Axis" click afterwards.
+        within = self._data_limits(x_limits=self.ax.get_xlim())
+        if within is not None:
+            self._apply_axis_limits_to_axes(auto_ylim=within[1])
+
+    def _data_limits(
+        self, x_limits: tuple[float, float] | None = None
+    ) -> tuple[tuple[float, float], tuple[float, float]] | None:
         x_values = []
         y_values = []
+        x_low, x_high = (None, None)
+        if x_limits is not None:
+            x_low, x_high = sorted(x_limits)
+
         for line in self._data_lines():
             x_data = np.asarray(line.get_xdata(), dtype=float)
             y_data = np.asarray(line.get_ydata(), dtype=float)
             finite = np.isfinite(x_data) & np.isfinite(y_data)
+            if x_low is not None and x_high is not None:
+                finite &= (x_data >= x_low) & (x_data <= x_high)
             if finite.any():
                 x_values.append(x_data[finite])
                 y_values.append(y_data[finite])
 
         if not x_values or not y_values:
-            return
+            return None
 
         x_all = np.concatenate(x_values)
         y_all = np.concatenate(y_values)
-        self.ax.set_xlim(*self._limits_with_margin(x_all))
-        self.ax.set_ylim(*self._limits_with_margin(y_all))
+        return self._limits_with_margin(x_all), self._limits_with_margin(y_all)
+
+    def _apply_axis_limits_to_axes(
+        self,
+        auto_xlim: tuple[float, float] | None = None,
+        auto_ylim: tuple[float, float] | None = None,
+    ) -> bool:
+        try:
+            x_min = self._axis_bound(self.x_min_var, "X min")
+            x_max = self._axis_bound(self.x_max_var, "X max")
+            y_min = self._axis_bound(self.y_min_var, "Y min")
+            y_max = self._axis_bound(self.y_max_var, "Y max")
+        except ValueError as exc:
+            messagebox.showerror("Invalid axis range", str(exc))
+            return False
+
+        current_xlim = self.ax.get_xlim()
+        current_ylim = self.ax.get_ylim()
+        x_low = auto_xlim[0] if x_min is None and auto_xlim is not None else x_min
+        x_high = auto_xlim[1] if x_max is None and auto_xlim is not None else x_max
+        y_low = auto_ylim[0] if y_min is None and auto_ylim is not None else y_min
+        y_high = auto_ylim[1] if y_max is None and auto_ylim is not None else y_max
+
+        x_low = current_xlim[0] if x_low is None else x_low
+        x_high = current_xlim[1] if x_high is None else x_high
+        y_low = current_ylim[0] if y_low is None else y_low
+        y_high = current_ylim[1] if y_high is None else y_high
+
+        if x_low >= x_high:
+            messagebox.showerror("Invalid axis range", "X min must be smaller than X max.")
+            return False
+        if y_low >= y_high:
+            messagebox.showerror("Invalid axis range", "Y min must be smaller than Y max.")
+            return False
+
+        self.ax.set_xlim(x_low, x_high)
+        self.ax.set_ylim(y_low, y_high)
+        return True
+
+    @staticmethod
+    def _axis_bound(variable: tk.StringVar, label: str) -> float | None:
+        raw_value = variable.get().strip()
+        if not raw_value:
+            return None
+        try:
+            return float(raw_value)
+        except ValueError as exc:
+            raise ValueError(f"{label} must be numeric or blank.") from exc
 
     @staticmethod
     def _limits_with_margin(values: np.ndarray, margin: float = 0.05) -> tuple[float, float]:
