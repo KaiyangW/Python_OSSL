@@ -1,0 +1,61 @@
+{
+  "colors": {
+    "136": "#b0b0b0",
+    "CBP": "#516df5",
+    "CzSi": "#63a6ee",
+    "TCTA": "#3C5488",
+    "tCP": "#4340e7",
+    "PPT": "#8491B4"
+  },
+  "widths": {
+    "136": 1.0,
+    "CBP": 1.0,
+    "CzSi": 1.0,
+    "TCTA": 1.0,
+    "tCP": 1.0,
+    "PPT": 1.0
+  },
+  "offsets": {
+    "136": 0.0,
+    "CBP": 0.0,
+    "CzSi": 0.0,
+    "TCTA": 0.0,
+    "tCP": 0.0,
+    "PPT": 0.0
+  },
+  "visible": {
+    "136": true,
+    "CBP": true,
+    "CzSi": true,
+    "TCTA": true,
+    "tCP": true,
+    "PPT": true
+  },
+  "checklists": {},
+  "text_params": {
+    "show_values": "\u663e\u793a",
+    "y_label": "Energy (eV)",
+    "x_label": ""
+  },
+  "legend_pos": {
+    "x": 0.97,
+    "y": 0.97
+  },
+  "text_pos": {
+    "x": -0.010989436213550557,
+    "y": -6.086402274881516
+  },
+  "xrange": [
+    -0.5261121628429288,
+    5.552299722357554
+  ],
+  "yrange": [
+    -7.1462559241706165,
+    -1.8537440758293835
+  ],
+  "yrange2": null,
+  "xrange_spec": null,
+  "yrange_spec": null,
+  "spectra_palette": null,
+  "spectra_selected_indices": []
+}
