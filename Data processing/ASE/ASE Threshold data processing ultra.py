@@ -238,7 +238,8 @@ class LaserAnalysisApp(ctk.CTk):
 
         self.log_txt = ctk.CTkTextbox(self.right, font=("Consolas", 12))
         self.log_txt.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
-        
+        self._init_log_colors()
+
         self.btn_run = ctk.CTkButton(self.right, text="START PROCESSING", fg_color="#2CC985", 
                                      height=50, font=("Arial", 16, "bold"), command=self.start_thread)
         self.btn_run.grid(row=2, column=0, padx=10, pady=10, sticky="ew")
@@ -286,8 +287,59 @@ class LaserAnalysisApp(ctk.CTk):
             self.lbl_path.configure(text=p)
             self.base_folder_path = p
 
+    # Color palette for the log (tag name -> hex color)
+    LOG_COLORS = {
+        "error":    "#FF5C5C",  # red
+        "warning":  "#FFB02E",  # orange
+        "success":  "#2CC985",  # green
+        "info":     "#4FC3F7",  # cyan
+        "fit":      "#B388FF",  # purple
+        "window":   "#FFD54F",  # yellow
+        "progress": "#90A4AE",  # blue-gray
+        "skip":     "#9E9E9E",  # gray
+        "default":  "#E0E0E0",  # soft white
+    }
+
+    def _init_log_colors(self):
+        """Configure the color tags on the underlying tkinter Text widget."""
+        try:
+            txt = self.log_txt._textbox
+            for tag, color in self.LOG_COLORS.items():
+                txt.tag_config(tag, foreground=color)
+        except Exception:
+            pass
+
+    def _classify_log(self, msg):
+        """Pick a color tag based on the content of the message."""
+        low = msg.lower()
+        if "[error]" in low or "critical" in low or "fail" in low or "error:" in low:
+            return "error"
+        if "[warning]" in low or "warning" in low:
+            return "warning"
+        if "[success]" in low or "all done" in low or "saved" in low:
+            return "success"
+        if "[info]" in low:
+            return "info"
+        if "[auto-fit]" in low:
+            return "fit"
+        if "[auto-window]" in low or "[manual-window]" in low:
+            return "window"
+        if "[progress]" in low:
+            return "progress"
+        if "[skip]" in low:
+            return "skip"
+        return "default"
+
+    def _insert_log(self, msg):
+        tag = self._classify_log(msg)
+        try:
+            self.log_txt._textbox.insert("end", msg + "\n", tag)
+        except Exception:
+            self.log_txt.insert("end", msg + "\n")
+        self.log_txt.see("end")
+
     def log(self, msg):
-        self.after(0, lambda: [self.log_txt.insert("end", msg+"\n"), self.log_txt.see("end")])
+        self.after(0, lambda: self._insert_log(msg))
 
     # --- FIX: Explicit Save/Load Logic ---
     def get_cfg(self):
