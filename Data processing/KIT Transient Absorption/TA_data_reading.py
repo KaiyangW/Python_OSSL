@@ -34,8 +34,8 @@ WAVELENGTH_WINDOWS = {
 }
 
 PLOT_MODES = (
-    "Time -> spectrum",
-    "Wavelength -> trace",
+    "Spectra",
+    "Kinetics",
 )
 
 DEFAULT_SPECTRUM_X_MIN_NM = 460.0
@@ -185,6 +185,11 @@ class TAViewer(ctk.CTk):
 
         self.data: TAData | None = None
         self.curve_count = 0
+        self.curve_params: dict = {}
+        # Net transform applied via Flip Y / baseline shift, so curves can be
+        # recomputed (e.g. after an averaging change) without losing them.
+        self.y_sign = 1.0
+        self.y_offset = 0.0
         self.cursor_line = None
         self.cursor_marker = None
         self.cursor_annotation = None
@@ -294,6 +299,7 @@ class TAViewer(ctk.CTk):
             sidebar,
             variable=self.window_var,
             values=list(AVERAGE_WINDOWS),
+            command=lambda _value: self._reaverage_curves(),
         ).pack(fill="x", padx=10, pady=(0, 12))
 
         # --- Wavelength controls ---
@@ -315,6 +321,7 @@ class TAViewer(ctk.CTk):
             sidebar,
             variable=self.wavelength_window_var,
             values=list(WAVELENGTH_WINDOWS),
+            command=lambda _value: self._reaverage_curves(),
         ).pack(fill="x", padx=10, pady=(0, 12))
 
         # --- Axis controls ---
@@ -572,6 +579,8 @@ class TAViewer(ctk.CTk):
             return
         for line in lines:
             line.set_ydata(-np.asarray(line.get_ydata(), dtype=float))
+        self.y_sign *= -1.0
+        self.y_offset = -self.y_offset
         self._hide_cursor()
         self.canvas.draw_idle()
         self.status_var.set("Flipped data along the y-axis (x -1).")
@@ -592,6 +601,7 @@ class TAViewer(ctk.CTk):
         offset = direction * step
         for line in lines:
             line.set_ydata(np.asarray(line.get_ydata(), dtype=float) + offset)
+        self.y_offset += offset
         self._hide_cursor()
         self.canvas.draw_idle()
         self.status_var.set(f"Shifted baseline by {offset:+.6g}.")
@@ -641,7 +651,7 @@ class TAViewer(ctk.CTk):
 
         self.status_var.set(f"Read settings from {Path(settings_path).name}.")
 
-    def _current_settings(self) -> dict[str, str]:
+    def _current_settings(self) -> dict:
         return {
             "data_file": self.file_var.get(),
             "plot_mode": self.mode_var.get(),
@@ -654,7 +664,27 @@ class TAViewer(ctk.CTk):
             "y_min": self.y_min_var.get(),
             "y_max": self.y_max_var.get(),
             "baseline_step": self.baseline_step_var.get(),
+            "y_sign": self.y_sign,
+            "y_offset": self.y_offset,
+            "curves": self._current_curves(),
         }
+
+    def _current_curves(self) -> list[dict]:
+        curves: list[dict] = []
+        for line in self._data_lines():
+            params = self.curve_params.get(line)
+            if params is None:
+                continue
+            curve = {
+                "mode": params.get("mode"),
+                "number": params.get("number"),
+            }
+            if "requested_time_ns" in params:
+                curve["requested_time_ns"] = params["requested_time_ns"]
+            if "requested_wavelength_nm" in params:
+                curve["requested_wavelength_nm"] = params["requested_wavelength_nm"]
+            curves.append(curve)
+        return curves
 
     def _apply_settings(self, settings: dict) -> None:
         data_file = str(settings.get("data_file", "")).strip()
@@ -679,6 +709,13 @@ class TAViewer(ctk.CTk):
             WAVELENGTH_WINDOWS,
         )
 
+        if "curves" in settings:
+            self._restore_curves(settings)
+        else:
+            self._reaverage_curves()
+
+        # Set after restoring curves: restoring mutates time/wavelength vars per
+        # curve, so apply the saved "current" selection last.
         for key, variable in (
             ("time_ns", self.time_var),
             ("wavelength_nm", self.wavelength_var),
@@ -694,6 +731,37 @@ class TAViewer(ctk.CTk):
         self._sync_sliders_to_entries()
         self._reset_axes()
         self.apply_axis_limits()
+
+    def _restore_curves(self, settings: dict) -> None:
+        curves = settings.get("curves")
+        if not isinstance(curves, list):
+            return
+
+        self.clear_curves()
+        if self.data is None:
+            return
+
+        # clear_curves resets the transform, so restore flip/baseline before
+        # plotting so each curve renders with the saved transform applied.
+        try:
+            self.y_sign = -1.0 if float(settings.get("y_sign", 1.0)) < 0 else 1.0
+        except (TypeError, ValueError):
+            self.y_sign = 1.0
+        try:
+            self.y_offset = float(settings.get("y_offset", 0.0))
+        except (TypeError, ValueError):
+            self.y_offset = 0.0
+
+        for curve in curves:
+            if not isinstance(curve, dict):
+                continue
+            mode = str(curve.get("mode", self.mode_var.get()))
+            if mode == PLOT_MODES[1] and "requested_wavelength_nm" in curve:
+                self.wavelength_var.set(str(curve["requested_wavelength_nm"]))
+                self._add_wavelength_trace()
+            elif "requested_time_ns" in curve:
+                self.time_var.set(str(curve["requested_time_ns"]))
+                self._add_time_spectrum()
 
     @staticmethod
     def _set_if_valid_option(
@@ -784,10 +852,17 @@ class TAViewer(ctk.CTk):
             }
         )
 
-        shared_x = None
-        same_x = True
+        x_low, x_high = sorted((x_min, x_max))
+        clipped_lines = []
         for line in lines:
             x_data = np.asarray(line.get_xdata(), dtype=float)
+            y_data = np.asarray(line.get_ydata(), dtype=float)
+            in_range = np.isfinite(x_data) & (x_data >= x_low) & (x_data <= x_high)
+            clipped_lines.append((line, x_data[in_range], y_data[in_range]))
+
+        shared_x = None
+        same_x = True
+        for _line, x_data, _y_data in clipped_lines:
             if shared_x is None:
                 shared_x = x_data
             elif shared_x.shape != x_data.shape or not np.allclose(
@@ -798,21 +873,17 @@ class TAViewer(ctk.CTk):
 
         if same_x and shared_x is not None:
             data = {x_label: shared_x}
-            for line in lines:
-                data[line.get_label()] = np.asarray(line.get_ydata(), dtype=float)
+            for line, _x_data, y_data in clipped_lines:
+                data[line.get_label()] = y_data
             data_df = pd.DataFrame(data)
         else:
             frames = []
-            for line in lines:
+            for line, x_data, y_data in clipped_lines:
                 frames.append(
                     pd.DataFrame(
                         {
-                            f"{line.get_label()} | {x_label}": np.asarray(
-                                line.get_xdata(), dtype=float
-                            ),
-                            f"{line.get_label()} | {y_label}": np.asarray(
-                                line.get_ydata(), dtype=float
-                            ),
+                            f"{line.get_label()} | {x_label}": x_data,
+                            f"{line.get_label()} | {y_label}": y_data,
                         }
                     )
                 )
@@ -872,7 +943,14 @@ class TAViewer(ctk.CTk):
             f"{self.curve_count}: {nearest_time_ns:.6g} ns, "
             f"{window_label}, {n_columns} cols"
         )
-        self.ax.plot(wavelengths, spectrum, label=label)
+        (line,) = self.ax.plot(
+            wavelengths, self.y_sign * spectrum + self.y_offset, label=label
+        )
+        self.curve_params[line] = {
+            "mode": PLOT_MODES[0],
+            "number": self.curve_count,
+            "requested_time_ns": requested_time_ns,
+        }
         self.ax.legend(
             loc="best",
             fontsize=self.secondary_font_size,
@@ -919,7 +997,19 @@ class TAViewer(ctk.CTk):
             f"{self.curve_count}: {nearest_wavelength_nm:.6g} nm, "
             f"{window_label}, {n_rows} rows"
         )
-        self.ax.plot(times_ns, trace, marker="o", markersize=3, linewidth=1.3, label=label)
+        (line,) = self.ax.plot(
+            times_ns,
+            self.y_sign * trace + self.y_offset,
+            marker="o",
+            markersize=3,
+            linewidth=1.3,
+            label=label,
+        )
+        self.curve_params[line] = {
+            "mode": PLOT_MODES[1],
+            "number": self.curve_count,
+            "requested_wavelength_nm": requested_wavelength_nm,
+        }
         self.ax.legend(
             loc="best",
             fontsize=self.secondary_font_size,
@@ -950,6 +1040,9 @@ class TAViewer(ctk.CTk):
         self.cursor_annotation = None
         self._reset_axes()
         self.curve_count = 0
+        self.curve_params.clear()
+        self.y_sign = 1.0
+        self.y_offset = 0.0
         self._refresh_curve_selector()
         self.canvas.draw_idle()
 
@@ -958,6 +1051,7 @@ class TAViewer(ctk.CTk):
         for line in self._data_lines():
             if line.get_label() == selected_label:
                 line.remove()
+                self.curve_params.pop(line, None)
                 break
         else:
             messagebox.showwarning(
@@ -974,6 +1068,65 @@ class TAViewer(ctk.CTk):
         self._refresh_curve_selector()
         self.canvas.draw_idle()
         self.status_var.set(f"Deleted curve: {selected_label}")
+
+    def _reaverage_curves(self) -> None:
+        if self.data is None:
+            return
+        lines = [line for line in self._data_lines() if line in self.curve_params]
+        if not lines:
+            return
+
+        spectrum_mode = self.mode_var.get() != PLOT_MODES[1]
+        if spectrum_mode:
+            window_label = self.window_var.get()
+            half_columns = AVERAGE_WINDOWS[window_label]
+        else:
+            window_label = self.wavelength_window_var.get()
+            half_window_nm = WAVELENGTH_WINDOWS[window_label]
+
+        selected_before = self.curve_select_var.get()
+        selected_after = None
+        for line in lines:
+            params = self.curve_params[line]
+            if spectrum_mode:
+                if params["mode"] != PLOT_MODES[0]:
+                    continue
+                wavelengths, spectrum, nearest_time_ns, n_columns, _ = (
+                    self.data.averaged_spectrum(
+                        params["requested_time_ns"], half_columns
+                    )
+                )
+                line.set_data(wavelengths, self.y_sign * spectrum + self.y_offset)
+                new_label = (
+                    f"{params['number']}: {nearest_time_ns:.6g} ns, "
+                    f"{window_label}, {n_columns} cols"
+                )
+            else:
+                if params["mode"] != PLOT_MODES[1]:
+                    continue
+                times_ns, trace, nearest_wavelength_nm, n_rows, _ = (
+                    self.data.averaged_trace(
+                        params["requested_wavelength_nm"], half_window_nm
+                    )
+                )
+                line.set_data(times_ns, self.y_sign * trace + self.y_offset)
+                new_label = (
+                    f"{params['number']}: {nearest_wavelength_nm:.6g} nm, "
+                    f"{window_label}, {n_rows} rows"
+                )
+
+            if line.get_label() == selected_before:
+                selected_after = new_label
+            line.set_label(new_label)
+
+        self._hide_cursor()
+        self._refresh_legend()
+        self._refresh_curve_selector(selected_after)
+        self._autoscale_to_data_lines()
+        self.canvas.draw_idle()
+        self.status_var.set(
+            f"Re-averaged {len(lines)} existing curve(s) with {window_label}."
+        )
 
     def _refresh_curve_selector(self, selected_label: str | None = None) -> None:
         labels = [line.get_label() for line in self._data_lines()]
