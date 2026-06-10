@@ -7,6 +7,7 @@ matplotlib.use("Agg")
 
 import os
 import re
+import sys
 from html import escape as html_escape
 from pathlib import Path
 
@@ -15,6 +16,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from Read_data_unified import read_text_lines, read_workbook, read_xy, sniff_delimiter
 
 from PlotUtils import (
     GLOBAL_FONT_SIZE,
@@ -153,44 +160,33 @@ def file_has_time_scan_keyword(file_path: str) -> bool:
     p = Path(file_path)
     if not p.is_file():
         return False
-    df = None
     try:
         suf = p.suffix.lower()
-        if suf == ".xlsx":
-            df = pd.read_excel(p, sheet_name=0, header=None, nrows=4)
+        if suf in (".xlsx", ".xls", ".xlsm"):
+            df = read_workbook(p, sheet=0, header=None, nrows=4)
+            if df is None or df.shape[0] < 2 or df.shape[1] < 2:
+                return False
+            cell = df.iloc[1, 1]
         else:
-            for enc in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
-                try:
-                    df = pd.read_csv(
-                        p,
-                        sep=None,
-                        engine="python",
-                        encoding=enc,
-                        header=None,
-                        nrows=4,
-                    )
-                    break
-                except UnicodeDecodeError:
-                    continue
-            if df is None:
-                df = pd.read_csv(
-                    p,
-                    sep=None,
-                    engine="python",
-                    encoding="utf-8",
-                    encoding_errors="replace",
-                    header=None,
-                    nrows=4,
-                )
-    except Exception:
-        return False
-    if df is None or df.shape[0] < 2 or df.shape[1] < 2:
-        return False
-    try:
-        cell = df.iloc[1, 1]
+            lines, _encoding = read_text_lines(p, max_lines=4)
+            if len(lines) < 2:
+                return False
+            delimiter = sniff_delimiter(lines)
+            row = _split_text_row(lines[1], delimiter)
+            if len(row) < 2:
+                return False
+            cell = row[1]
     except Exception:
         return False
     return "Time Scan" in str(cell)
+
+
+def _split_text_row(line: str, delimiter: str) -> list[str]:
+    if delimiter == "\\s+":
+        return line.split()
+    if delimiter == ",":
+        return [cell.strip() for cell in line.replace("\t", ",").split(",")]
+    return [cell.strip() for cell in line.split(delimiter)]
 
 
 
@@ -227,35 +223,23 @@ def load_xy_from_file(file_path: str) -> tuple[np.ndarray, np.ndarray] | None:
     p = Path(file_path)
     if not p.is_file():
         return None
-    df = None
     try:
         suf = p.suffix.lower()
-        if suf == ".xlsx":
-            df = pd.read_excel(p, sheet_name=0)
+        if suf in (".xlsx", ".xls", ".xlsm"):
+            df = read_workbook(p, sheet=0)
+            if df is None or df.shape[1] < 2:
+                return None
+            x = pd.to_numeric(df.iloc[:, 0], errors="coerce")
+            y = pd.to_numeric(df.iloc[:, 1], errors="coerce")
+            m = x.notna() & y.notna()
+            x = x[m].to_numpy(dtype=float)
+            y = y[m].to_numpy(dtype=float)
         else:
-            for enc in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
-                try:
-                    df = pd.read_csv(p, sep=None, engine="python", encoding=enc)
-                    break
-                except UnicodeDecodeError:
-                    continue
-            if df is None:
-                df = pd.read_csv(
-                    p,
-                    sep=None,
-                    engine="python",
-                    encoding="utf-8",
-                    encoding_errors="replace",
-                )
+            spectrum = read_xy(p)
+            x = spectrum.x
+            y = spectrum.y
     except Exception:
         return None
-    if df is None or df.shape[1] < 2:
-        return None
-    x = pd.to_numeric(df.iloc[:, 0], errors="coerce")
-    y = pd.to_numeric(df.iloc[:, 1], errors="coerce")
-    m = x.notna() & y.notna()
-    x = x[m].to_numpy(dtype=float)
-    y = y[m].to_numpy(dtype=float)
     if len(x) < 2:
         return None
     return x, y

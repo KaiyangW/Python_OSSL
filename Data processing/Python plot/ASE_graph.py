@@ -2,8 +2,9 @@ import os
 import re
 import sys
 import math
+from pathlib import Path
+
 import numpy as np
-import pandas as pd
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
 
@@ -12,6 +13,12 @@ try:
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
 except Exception:
     pass
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from Read_data_unified import read_table, read_workbook
 
 # 引入 PlotUtils 的通用模块
 import tkinter as tk
@@ -77,7 +84,7 @@ def identify_and_load_data(file_paths):
 
     for filepath in file_paths:
         try:
-            all_sheets = pd.read_excel(filepath, sheet_name=None)
+            all_sheets = read_workbook(filepath, sheet=None)
         except Exception as e:
             continue
         
@@ -119,7 +126,7 @@ def identify_and_load_data(file_paths):
                 batch_csv = os.path.join(folder_of_file, 'Threshold_Summary_Batch.csv')
                 if os.path.exists(batch_csv):
                     try:
-                        df_batch = pd.read_csv(batch_csv)
+                        df_batch = read_table(batch_csv)
                         batch_threshold, batch_threshold_err = _read_threshold_from_dataframe(df_batch)
                         if batch_threshold is not None:
                             auto_threshold = batch_threshold
@@ -148,7 +155,7 @@ def identify_and_load_data(file_paths):
                     break
             if df_other is None:
                 try:
-                    df_other = pd.read_excel(filepath, sheet_name=0, usecols=[0, 1, 2])
+                    df_other = read_workbook(filepath, sheet=0, usecols=[0, 1, 2])
                     df_other.columns = ['Fluence', 'Intensity', 'FWHM']
                     df_other = df_other.dropna()
                 except Exception:
@@ -166,7 +173,7 @@ def _read_threshold_from_batch_csv(folder):
     if not os.path.exists(batch_csv):
         return None, None
     try:
-        df = pd.read_csv(batch_csv)
+        df = read_table(batch_csv)
         return _read_threshold_from_dataframe(df)
     except Exception:
         return None, None
@@ -215,7 +222,7 @@ def detect_threshold_and_error(file_paths, folder):
     th, err = None, None
     for filepath in file_paths:
         try:
-            all_sheets = pd.read_excel(filepath, sheet_name=None)
+            all_sheets = read_workbook(filepath, sheet=None)
         except Exception:
             continue
         for df in all_sheets.values():

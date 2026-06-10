@@ -12,7 +12,12 @@ import webbrowser
 from pathlib import Path
 
 import math
-import pandas as pd
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from Read_data_unified import read_workbook
 
 from dash import Dash, Input, Output, State, callback_context, dcc, html, no_update
 
@@ -1540,7 +1545,7 @@ def main():
         print("已取消。")
         sys.exit(0)
     try:
-        df = pd.read_excel(mp)
+        df = read_workbook(mp, sheet=0)
     except Exception as e:
         print(f"❌ 无法读取清单: {e}")
         sys.exit(1)

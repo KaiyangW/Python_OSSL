@@ -2,10 +2,17 @@ import os
 import re
 import sys
 import math
+from pathlib import Path
+
 import numpy as np
-import pandas as pd
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from Read_data_unified import read_workbook
 
 from PlotUtils import (
     setup_matplotlib_style,
@@ -52,7 +59,7 @@ def identify_and_load_data(file_paths):
 
     for filepath in file_paths:
         try:
-            all_sheets = pd.read_excel(filepath, sheet_name=None)
+            all_sheets = read_workbook(filepath, sheet=None)
         except Exception:
             continue
 
@@ -139,10 +146,10 @@ def parse_fluence_column_name(name):
 
 def load_spectra_from_analysed(analysed_file):
     """读取 Raw Spec 与 Metrics；能量以 Metrics 为准（与导出脚本列顺序一致）。"""
-    df_raw = pd.read_excel(analysed_file, sheet_name='Raw Spec (nm)', index_col=0)
+    df_raw = read_workbook(analysed_file, sheet='Raw Spec (nm)', index_col=0)
     wavelengths = df_raw.index.values.astype(float)
 
-    df_metrics = pd.read_excel(analysed_file, sheet_name='Metrics')
+    df_metrics = read_workbook(analysed_file, sheet='Metrics')
     if FLUENCE_COL in df_metrics.columns:
         pump_fluences = df_metrics[FLUENCE_COL].values.astype(float)
     else:
@@ -186,7 +193,7 @@ def load_laser_data(file_paths):
         print("❌ 在 ManualFit_Result 中找不到 'Plot_data' 页。")
         sys.exit()
 
-    df_params = pd.read_excel(manual_fit_file, sheet_name='Parameters')
+    df_params = read_workbook(manual_fit_file, sheet='Parameters')
     th_val, th_err = _read_threshold_from_dataframe(df_params)
     if th_val is None and 'Threshold' in df_params.columns:
         try:

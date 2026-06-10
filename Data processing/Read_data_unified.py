@@ -36,6 +36,7 @@ PUBLIC API
 --------------------------------------------------------------------------------
     read_xy(path, format=None, encoding=None, usecols=(0, 1)) -> Spectrum
     read_grid(path, layout="auto") -> Grid
+    read_table(path, sheet=0, ...) -> pandas DataFrame       (CSV/TXT/Excel table)
     read_workbook(path, sheet=None) -> pandas object        (needs pandas)
     read_mat(path) -> dict                                  (needs scipy/mat73)
     read_folder(folder, roles, ...) -> FolderBundle
@@ -779,6 +780,35 @@ def read_workbook(path: PathLike, sheet: Optional[Union[str, int]] = None, **kwa
     if not p.is_file():
         raise DataReadError(f"File not found: {p}")
     return pd.read_excel(p, sheet_name=sheet, **kwargs)
+
+
+def read_table(path: PathLike, sheet: Optional[Union[str, int]] = 0, **kwargs):
+    """Read a rectangular table as a pandas DataFrame.
+
+    Excel files are routed through :func:`read_workbook`.  Text files reuse the
+    shared encoding and delimiter detection so plotting scripts do not each need
+    their own ``read_csv`` fallback chain.
+    """
+    pd = _import_pandas()
+    p = Path(path)
+    if not p.is_file():
+        raise DataReadError(f"File not found: {p}")
+
+    if p.suffix.lower() in (".xlsx", ".xls", ".xlsm"):
+        return read_workbook(p, sheet=sheet, **kwargs)
+
+    encoding = kwargs.pop("encoding", None)
+    sep = kwargs.pop("sep", None)
+    if sep is None:
+        encs = (encoding,) if encoding else DEFAULT_ENCODINGS
+        lines, enc = read_text_lines(p, encs, max_lines=_PEEK_LINES)
+        sep = sniff_delimiter(lines)
+        encoding = enc
+    if sep == "\\s+":
+        sep = r"\s+"
+    if sep == r"\s+" or kwargs.get("engine") is None:
+        kwargs.setdefault("engine", "python")
+    return pd.read_csv(p, sep=sep, encoding=encoding, **kwargs)
 
 
 def read_mat(path: PathLike) -> dict:

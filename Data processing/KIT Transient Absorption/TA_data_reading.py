@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -12,6 +13,12 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 
 matplotlib.use("TkAgg")
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from Read_data_unified import read_grid
 
 DARK_BG = "#1a1a1a"
 PANEL_BG = "#2b2b2b"
@@ -73,29 +80,26 @@ class TAData:
         self.load(path)
 
     def load(self, path: Path) -> None:
-        # Matches the grid written by mat_to_CSV.py: corner label
-        # "Wavelength (nm) \ Time (s)", first row = times (s), first column =
-        # wavelengths (nm), body = dT/T matrix [wavelengths x times].
-        if path.suffix.lower() == ".csv":
-            raw = pd.read_csv(path, header=None)
-        else:
-            raw = pd.read_excel(path, header=None, engine="openpyxl")
-        numeric = raw.apply(pd.to_numeric, errors="coerce")
-
-        times = numeric.iloc[0, 1:].to_numpy(dtype=float)
-        wavelengths = numeric.iloc[1:, 0].to_numpy(dtype=float)
-        signal = numeric.iloc[1:, 1:].to_numpy(dtype=float)
+        # Unified reader handles encoding, delimiter, and CSV/Excel text variants.
+        grid = read_grid(path, layout="ta_grid")
+        times = np.asarray(grid.col_values, dtype=float)
+        wavelengths = np.asarray(grid.row_values, dtype=float)
+        signal = np.asarray(grid.data, dtype=float)
 
         valid_time = np.isfinite(times)
         valid_wavelength = np.isfinite(wavelengths)
 
         if valid_time.sum() == 0 or valid_wavelength.sum() == 0:
             raise ValueError("Could not find numeric time or wavelength data.")
+        if signal.shape != (wavelengths.size, times.size):
+            raise ValueError(
+                "TA grid shape does not match the detected time/wavelength axes."
+            )
 
         self.path = path
         self.times_s = times[valid_time]
         self.wavelengths_nm = wavelengths[valid_wavelength]
-        self.raw_signal = signal[np.ix_(valid_wavelength, valid_time)]
+        self.raw_signal = signal[np.ix_(valid_wavelength, valid_time)].copy()
         self.signal = self.raw_signal.copy()
         self.baseline_corrected = False
         self.baseline_vector = None
@@ -669,8 +673,10 @@ class TAViewer(ctk.CTk):
             title="Choose TA data file",
             initialdir=str(DEFAULT_DATA_FILE.parent),
             filetypes=[
+                ("TA grid files", "*.csv *.txt *.dat *.xlsx *.xls *.xlsm"),
                 ("CSV files", "*.csv"),
-                ("Excel files", "*.xlsx"),
+                ("Text files", "*.txt *.dat"),
+                ("Excel files", "*.xlsx *.xls *.xlsm"),
                 ("All files", "*.*"),
             ],
         )

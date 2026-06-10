@@ -1,10 +1,18 @@
 import os
 import sys
+from pathlib import Path
+
 import pandas as pd
 import plotly.graph_objects as go
 import matplotlib.ticker as ticker
 import matplotlib
 matplotlib.use("Agg")
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from Read_data_unified import read_workbook
 
 import PlotUtils as pu
 
@@ -77,7 +85,7 @@ def _resolve_plot_config(config, data_list):
 def load_decay_data(filepath):
     file_basename = os.path.basename(filepath)
     try:
-        df = pd.read_excel(filepath, sheet_name="Fit_Curve")
+        df = read_workbook(filepath, sheet="Fit_Curve")
     except Exception:
         print(f"❌ 无法找到 'Fit_Curve' Sheet: {file_basename}")
         return None
