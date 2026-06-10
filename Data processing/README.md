@@ -1,6 +1,6 @@
 # Data Processing Script Collection
 
-> Last updated: 2026-06-07
+> Last updated: 2026-06-10
 
 ## Table of Contents
 
@@ -131,7 +131,7 @@
 
 ### 2. `TA_data_reading.py`
 
-**Purpose**: **Interactive visualization tool** for KIT TA data. It loads a two-dimensional matrix, wavelength × time, from `.xlsx` files and supports extracting spectra at fixed times or kinetic traces at fixed wavelengths. **Core capabilities**: - Two modes: `Time -> spectrum` for fixed-time spectra and `Wavelength -> trace` for fixed-wavelength traces. - Optional moving averages along time / wavelength axes: 10 ps / 1 ns / 2 ns; 2 nm / 3 nm. - Multiple curve overlay, nearest-point readout on mouse hover, Matplotlib toolbar zooming, and Windows high-DPI adaptation. **Usage**: Browse / Load an `.xlsx` file, configure parameters, click **Add Curve**, and use **Clear Curves** to reset. **Output**: No file output; interactive plot only.
+**Purpose**: **Interactive visualization tool** for KIT TA data. It loads a two-dimensional matrix, wavelength × time, from `.csv` or `.xlsx` files and supports extracting spectra at fixed times or kinetic traces at fixed wavelengths. **Core capabilities**: - Two synchronized panels: fixed-time spectra and fixed-wavelength kinetic traces can be displayed together. - Optional local averaging along the time / wavelength axes: ±1 or ±2 time columns; 2 nm / 3 nm wavelength windows. - Per-wavelength automatic **Baseline Correction** toggle: the baseline is estimated from pre-pump columns, preferring an automatically detected signal onset/time-zero when available, then falling back to negative times or the earliest columns. Clicking the button again restores the raw data; corrected plots show a bright-orange `BASELINE CORRECTED` notice in the plot area. - Multiple curve overlay, curve selection/deletion, nearest-point readout on mouse hover, Matplotlib toolbar zooming, independent axis controls, Flip Y, JSON setting save/load, and Windows high-DPI adaptation. **Usage**: Browse / Load a `.csv` or `.xlsx` file, configure time/wavelength parameters, click **Add Spectrum** or **Add Kinetics**, and use **Baseline Correction** when needed. **Output**: Saves plotted curves as PNG + XLSX through **Save PNG + XLSX**.
 
 ------------------------------------------------------------------------
 
