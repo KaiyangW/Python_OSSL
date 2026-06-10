@@ -1985,6 +1985,15 @@ class TAViewer(ctk.CTk):
             )
         ax.tick_params(labelsize=self.secondary_font_size, colors="white")
         ax.grid(True, linestyle=":", alpha=0.3)
+        ax.axhline(
+            0.0,
+            color="red",
+            linestyle=(0, (4, 2)),
+            linewidth=2.5,
+            alpha=0.9,
+            zorder=1,
+            label="_zero_line",
+        )
 
     # ------------------------------------------------------------------
     # Hover cursor (per subplot)
