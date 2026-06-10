@@ -1,3 +1,30 @@
+"""KIT Transient Absorption data viewer and baseline correction.
+
+Physical approximations
+-----------------------
+Time axis (chirp / group-velocity dispersion)
+    All wavelengths share one detector time axis (``times_s``). The code does
+    not apply chirp or wavelength-dependent t0 correction: pump-probe delay is
+    treated as t(lambda) = t_detector for every probe wavelength.
+
+    In white-light probe setups, different wavelengths can reach the sample or
+    detector at slightly different times (e.g. blue before red under normal
+    dispersion). Here that effect is ignored.
+
+    This is appropriate for nanosecond pump excitation and nanosecond-scale
+    delays, where the time step is usually much larger than the chirp spread
+    across the probed band. It is not rigorous for femtosecond experiments
+    with sub-picosecond chirp: those need per-wavelength t0(lambda) calibration
+    and resampling onto a common delay axis before spectra or kinetics analysis.
+
+Baseline correction
+    The pre-pump time window used for baseline is chosen once on the global
+    time axis (onset detection aggregates signal activity across wavelengths).
+    The value subtracted at each wavelength is that wavelength's median over
+    those columns. With ns timing, any t0(lambda) variation inside the narrow
+    pre-pump window is typically negligible compared with the time resolution.
+"""
+
 import json
 import sys
 from pathlib import Path
@@ -643,16 +670,24 @@ class TAViewer(ctk.CTk):
         )
         self.status_label.pack(fill="x", padx=pad, pady=(8, 8))
 
-        # --- Plot area: two stacked subplots, spectra on top, kinetics below ---
+        # --- Plot area: three stacked subplots. Spectra on top, kinetics in the
+        # middle, and the per-wavelength subtracted baseline on the bottom (only
+        # populated while baseline correction is active). ---
         plot_frame = ctk.CTkFrame(self)
         plot_frame.pack(side="right", fill="both", expand=True, padx=(0, 10), pady=10)
 
         plt.style.use("dark_background")
-        self.figure = Figure(figsize=(10, 8), dpi=110)
+        self.figure = Figure(figsize=(10, 9), dpi=110)
         self.figure.patch.set_facecolor(DARK_BG)
-        self.ax_spec, self.ax_kin = self.figure.subplots(2, 1)
+        self.ax_spec, self.ax_kin, self.ax_base = self.figure.subplots(
+            3, 1, gridspec_kw={"height_ratios": [1.0, 1.0, 0.6]}
+        )
+        # Baseline panel shares the wavelength axis with the spectrum panel so
+        # its x-range (manual limits, autoscale, and toolbar zoom) always tracks
+        # the spectrum for easy side-by-side comparison.
+        self.ax_base.sharex(self.ax_spec)
         self.figure.subplots_adjust(
-            left=0.10, right=0.97, top=0.95, bottom=0.07, hspace=0.32
+            left=0.10, right=0.97, top=0.96, bottom=0.06, hspace=0.45
         )
         self.axis_vars = {
             self.ax_spec: (
@@ -842,6 +877,7 @@ class TAViewer(ctk.CTk):
         for ax in self._all_axes():
             if not self._apply_axis_to_ax(ax):
                 return
+        self._update_baseline_plot()
         self.canvas.draw_idle()
         self.status_var.set("Applied axis range. Leave a field blank to autoscale it.")
 
@@ -859,6 +895,7 @@ class TAViewer(ctk.CTk):
             variable.set("")
         for ax in self._all_axes():
             self._autoscale_ax(ax)
+        self._update_baseline_plot()
         self.canvas.draw_idle()
         self.status_var.set("Restored automatic axis range.")
 
@@ -1001,6 +1038,7 @@ class TAViewer(ctk.CTk):
         for ax in self._all_axes():
             if self._data_lines(ax):
                 self._autoscale_ax(ax)
+        self._update_baseline_plot()
         self.canvas.draw_idle()
         self.status_var.set("Flipped both plots along the y-axis (x -1).")
 
@@ -1155,9 +1193,86 @@ class TAViewer(ctk.CTk):
                 tooltip = getattr(self.baseline_button, "_tooltip", None)
                 if tooltip is not None:
                     tooltip.set_text("Apply baseline correction")
+        self._update_baseline_plot()
         self._update_baseline_notice()
         if hasattr(self, "canvas"):
             self.canvas.draw_idle()
+
+    def _update_baseline_plot(self) -> None:
+        # Bottom panel: the per-wavelength baseline that was subtracted. Plotted
+        # against wavelength because baseline_vector holds one value per
+        # wavelength. The same y_sign as the main plots is applied so the curve
+        # matches what the spectra/kinetics show after a Flip Y.
+        ax = self.ax_base
+        ax.clear()
+        ax.set_facecolor(DARK_BG)
+        ax.set_xlabel("Wavelength (nm)", fontsize=self.plot_font_size, color="white")
+        ax.set_ylabel(Y_LABEL, fontsize=self.plot_font_size, color="white")
+        ax.set_title(
+            "Subtracted baseline (per wavelength)",
+            fontsize=self.plot_font_size + 2,
+            color="white",
+        )
+        ax.tick_params(labelsize=self.secondary_font_size, colors="white")
+        ax.grid(True, linestyle=":", alpha=0.3)
+
+        corrected = (
+            self.data is not None
+            and self.data.baseline_corrected
+            and self.data.baseline_vector is not None
+        )
+        if not corrected:
+            ax.text(
+                0.5,
+                0.5,
+                "Apply baseline correction to view the subtracted baseline",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                color="0.6",
+                fontsize=self.secondary_font_size,
+            )
+            return
+
+        wavelengths = np.asarray(self.data.wavelengths_nm, dtype=float)
+        baseline = self.y_sign * np.asarray(self.data.baseline_vector, dtype=float)
+        ax.plot(
+            wavelengths,
+            baseline,
+            color=BASELINE_NOTICE_COLOR,
+            linewidth=1.5,
+            label="Subtracted baseline",
+        )
+        # Auto y-scale to the baseline values inside the current wavelength
+        # window (shared with the spectrum), so small variations are visible
+        # instead of being flattened by edge outliers or the zero reference.
+        x_low, x_high = sorted(self.ax_spec.get_xlim())
+        in_window = (
+            np.isfinite(wavelengths)
+            & np.isfinite(baseline)
+            & (wavelengths >= x_low)
+            & (wavelengths <= x_high)
+        )
+        if not in_window.any():
+            in_window = np.isfinite(wavelengths) & np.isfinite(baseline)
+        if in_window.any():
+            y_low, y_high = self._limits_with_margin(baseline[in_window])
+            ax.set_ylim(y_low, y_high)
+        # Zero reference drawn without expanding the y-range (only shown when 0
+        # is already inside the data-driven limits).
+        if in_window.any() and y_low <= 0.0 <= y_high:
+            ax.axhline(0.0, color="white", linestyle="--", linewidth=0.8, alpha=0.4)
+        if self.data.baseline_t0_ns is not None:
+            ax.text(
+                0.98,
+                0.04,
+                f"pre-pump cutoff ~ {self.data.baseline_t0_ns:.6g} ns",
+                transform=ax.transAxes,
+                ha="right",
+                va="bottom",
+                color="0.7",
+                fontsize=self.secondary_font_size,
+            )
 
     def _update_baseline_notice(self) -> None:
         for artist in self.baseline_notice_artists:
@@ -1849,6 +1964,7 @@ class TAViewer(ctk.CTk):
     def _reset_axes(self) -> None:
         self._reset_axes_single(self.ax_spec)
         self._reset_axes_single(self.ax_kin)
+        self._update_baseline_plot()
         self._update_baseline_notice()
 
     def _reset_axes_single(self, ax) -> None:
