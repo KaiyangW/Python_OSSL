@@ -19,10 +19,12 @@ Time axis (chirp / group-velocity dispersion)
 
 Baseline correction
     The pre-pump time window used for baseline is chosen once on the global
-    time axis (onset detection aggregates signal activity across wavelengths).
-    The value subtracted at each wavelength is that wavelength's median over
-    those columns. With ns timing, any t0(lambda) variation inside the narrow
-    pre-pump window is typically negligible compared with the time resolution.
+    time axis. Negative-time columns are preferred whenever present; only files
+    without negative times fall back to onset detection that aggregates signal
+    activity across wavelengths. The value subtracted at each wavelength is
+    that wavelength's median over those columns. With ns timing, any t0(lambda)
+    variation inside the narrow pre-pump window is typically negligible compared
+    with the time resolution.
 """
 
 import json
@@ -232,6 +234,15 @@ class TAData:
         usable_cols = np.where(usable)[0]
         sorted_cols = usable_cols[np.argsort(self.times_s[usable_cols])]
         sorted_times_ns = self.times_s[sorted_cols] * 1e9
+
+        # Be conservative for pump-probe data: if negative delays are available,
+        # use only those known pre-pump columns instead of inferring a later t0.
+        negative_cols = usable_cols[self.times_s[usable_cols] < 0]
+        if negative_cols.size:
+            mask = np.zeros_like(self.times_s, dtype=bool)
+            mask[negative_cols] = True
+            return mask, None, "negative-time"
+
         onset_pos = self._estimate_onset_position(sorted_cols)
 
         if onset_pos is not None:
@@ -243,12 +254,6 @@ class TAData:
                 mask = np.zeros_like(self.times_s, dtype=bool)
                 mask[sorted_cols[:guard_pos]] = True
                 return mask, float(sorted_times_ns[onset_pos]), "estimated pre-pump"
-
-        negative_cols = usable_cols[self.times_s[usable_cols] < 0]
-        if negative_cols.size:
-            mask = np.zeros_like(self.times_s, dtype=bool)
-            mask[negative_cols] = True
-            return mask, None, "negative times"
 
         fallback_count = max(1, min(5, int(np.ceil(sorted_cols.size * 0.1))))
         mask = np.zeros_like(self.times_s, dtype=bool)
