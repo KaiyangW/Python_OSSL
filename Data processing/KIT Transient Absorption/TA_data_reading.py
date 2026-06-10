@@ -17,6 +17,7 @@ DARK_BG = "#1a1a1a"
 PANEL_BG = "#2b2b2b"
 ACCENT = "#2CC985"
 ACCENT_RED = "#C92C45"
+BASELINE_NOTICE_COLOR = "#FF9F00"
 
 
 DEFAULT_DATA_FILE = Path(
@@ -63,7 +64,12 @@ class TAData:
         self.path = path
         self.times_s: np.ndarray
         self.wavelengths_nm: np.ndarray
+        self.raw_signal: np.ndarray
         self.signal: np.ndarray
+        self.baseline_corrected = False
+        self.baseline_vector: np.ndarray | None = None
+        self.baseline_mask: np.ndarray | None = None
+        self.baseline_t0_ns: float | None = None
         self.load(path)
 
     def load(self, path: Path) -> None:
@@ -89,7 +95,114 @@ class TAData:
         self.path = path
         self.times_s = times[valid_time]
         self.wavelengths_nm = wavelengths[valid_wavelength]
-        self.signal = signal[np.ix_(valid_wavelength, valid_time)]
+        self.raw_signal = signal[np.ix_(valid_wavelength, valid_time)]
+        self.signal = self.raw_signal.copy()
+        self.baseline_corrected = False
+        self.baseline_vector = None
+        self.baseline_mask = None
+        self.baseline_t0_ns = None
+
+    def apply_baseline_correction(self) -> dict:
+        baseline_mask, estimated_t0_ns, method = self._baseline_column_mask()
+        if not baseline_mask.any():
+            raise ValueError("Could not find baseline columns.")
+
+        baseline = np.nanmedian(self.raw_signal[:, baseline_mask], axis=1)
+        fallback = np.nanmedian(self.raw_signal, axis=1)
+        baseline = np.where(
+            np.isfinite(baseline),
+            baseline,
+            np.where(np.isfinite(fallback), fallback, 0.0),
+        )
+
+        self.signal = self.raw_signal - baseline[:, np.newaxis]
+        self.baseline_corrected = True
+        self.baseline_vector = baseline
+        self.baseline_mask = baseline_mask
+        self.baseline_t0_ns = estimated_t0_ns
+
+        baseline_times_ns = self.times_s[baseline_mask] * 1e9
+        return {
+            "columns": int(baseline_mask.sum()),
+            "time_low_ns": float(np.nanmin(baseline_times_ns)),
+            "time_high_ns": float(np.nanmax(baseline_times_ns)),
+            "estimated_t0_ns": estimated_t0_ns,
+            "method": method,
+        }
+
+    def clear_baseline_correction(self) -> None:
+        self.signal = self.raw_signal.copy()
+        self.baseline_corrected = False
+        self.baseline_vector = None
+        self.baseline_mask = None
+        self.baseline_t0_ns = None
+
+    def _baseline_column_mask(self) -> tuple[np.ndarray, float | None, str]:
+        finite_time = np.isfinite(self.times_s)
+        finite_signal_column = np.isfinite(self.raw_signal).any(axis=0)
+        usable = finite_time & finite_signal_column
+        if not usable.any():
+            raise ValueError("Could not find finite time/signal columns.")
+
+        usable_cols = np.where(usable)[0]
+        sorted_cols = usable_cols[np.argsort(self.times_s[usable_cols])]
+        sorted_times_ns = self.times_s[sorted_cols] * 1e9
+        onset_pos = self._estimate_onset_position(sorted_cols)
+
+        if onset_pos is not None:
+            # Leave one column before the detected onset as a guard when enough
+            # pre-pump points exist; otherwise prefer the detected pre-onset
+            # points over a wider negative-time range that may contain signal.
+            guard_pos = onset_pos - 1 if onset_pos >= 3 else onset_pos
+            if guard_pos > 0:
+                mask = np.zeros_like(self.times_s, dtype=bool)
+                mask[sorted_cols[:guard_pos]] = True
+                return mask, float(sorted_times_ns[onset_pos]), "estimated pre-pump"
+
+        negative_cols = usable_cols[self.times_s[usable_cols] < 0]
+        if negative_cols.size:
+            mask = np.zeros_like(self.times_s, dtype=bool)
+            mask[negative_cols] = True
+            return mask, None, "negative times"
+
+        fallback_count = max(1, min(5, int(np.ceil(sorted_cols.size * 0.1))))
+        mask = np.zeros_like(self.times_s, dtype=bool)
+        mask[sorted_cols[:fallback_count]] = True
+        return mask, None, "earliest columns"
+
+    def _estimate_onset_position(self, sorted_cols: np.ndarray) -> int | None:
+        n_cols = sorted_cols.size
+        if n_cols < 4:
+            return None
+
+        reference_count = max(3, min(max(5, n_cols // 10), n_cols // 4))
+        sorted_signal = self.raw_signal[:, sorted_cols]
+        reference = np.nanmedian(sorted_signal[:, :reference_count], axis=1)
+        residual = sorted_signal - reference[:, np.newaxis]
+        activity = np.nanmedian(np.abs(residual), axis=0)
+        finite_activity = np.isfinite(activity)
+        if finite_activity.sum() < 4:
+            return None
+
+        activity = np.where(finite_activity, activity, np.nanmedian(activity[finite_activity]))
+        early_activity = activity[:reference_count]
+        noise_center = float(np.nanmedian(early_activity))
+        noise_mad = float(np.nanmedian(np.abs(early_activity - noise_center))) * 1.4826
+        peak = float(np.nanmax(activity))
+        if not np.isfinite(peak) or peak <= noise_center:
+            return None
+
+        threshold = noise_center + max(6.0 * noise_mad, 0.1 * (peak - noise_center))
+        if threshold >= peak:
+            return None
+
+        consecutive = 2 if n_cols >= 8 else 1
+        search_start = max(1, reference_count // 2)
+        above_threshold = activity > threshold
+        for idx in range(search_start, n_cols - consecutive + 1):
+            if np.all(above_threshold[idx : idx + consecutive]):
+                return idx
+        return None
 
     @property
     def min_time_ns(self) -> float:
@@ -195,14 +308,12 @@ class TAViewer(ctk.CTk):
         self.spec_count = 0
         self.kin_count = 0
         self.curve_params: dict = {}
-        # Net transform applied via Flip Y / baseline shift. It is global and
-        # applied to curves on BOTH subplots so spectra and kinetics always move
-        # together. Stored so curves can be recomputed (e.g. after an averaging
-        # change) without losing the applied transform.
+        # Net sign transform applied via Flip Y to both subplots.
         self.y_sign = 1.0
-        self.y_offset = 0.0
         # One cursor (line/marker/annotation) per subplot, created lazily.
         self.cursor_artists: dict = {}
+        self.baseline_notice_artists = []
+        self.plot_selected_curve = None
 
         self.file_var = tk.StringVar(value=str(DEFAULT_DATA_FILE))
         self.time_var = tk.StringVar(value="0")
@@ -220,7 +331,6 @@ class TAViewer(ctk.CTk):
         self.kin_y_min_var = tk.StringVar(value="")
         self.kin_y_max_var = tk.StringVar(value="")
 
-        self.baseline_step_var = tk.StringVar(value="1e-4")
         self.curve_select_var = tk.StringVar(value="No curves")
         self.status_var = tk.StringVar(value="Load a data file to begin.")
 
@@ -385,30 +495,15 @@ class TAViewer(ctk.CTk):
         ctk.CTkButton(
             sidebar, text="Flip Y (x -1)", command=self.flip_y_axis
         ).pack(fill="x", padx=10, pady=(0, 6))
-
-        ctk.CTkLabel(sidebar, text="Baseline shift step", anchor="w").pack(
-            fill="x", padx=10, pady=(2, 2)
+        self.baseline_button = ctk.CTkButton(
+            sidebar,
+            text="Apply Baseline Correction",
+            command=self.toggle_baseline_correction,
+            fg_color=ACCENT,
+            hover_color="#249b6b",
+            text_color="#0d0d0d",
         )
-        baseline_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
-        baseline_frame.pack(fill="x", padx=10, pady=(0, 12))
-        baseline_frame.grid_columnconfigure(0, weight=1)
-
-        baseline_entry = ctk.CTkEntry(
-            baseline_frame, textvariable=self.baseline_step_var
-        )
-        baseline_entry.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        ctk.CTkButton(
-            baseline_frame,
-            text="\u25b2",
-            width=44,
-            command=lambda: self.shift_baseline(1),
-        ).grid(row=0, column=1, padx=2)
-        ctk.CTkButton(
-            baseline_frame,
-            text="\u25bc",
-            width=44,
-            command=lambda: self.shift_baseline(-1),
-        ).grid(row=0, column=2, padx=(2, 0))
+        self.baseline_button.pack(fill="x", padx=10, pady=(0, 12))
 
         # --- Settings ---
         ctk.CTkLabel(sidebar, text="Settings", anchor="w").pack(
@@ -475,15 +570,19 @@ class TAViewer(ctk.CTk):
 
         self.canvas = FigureCanvasTkAgg(self.figure, master=plot_frame)
         self.canvas.draw()
-        self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=(10, 0))
+        plot_widget = self.canvas.get_tk_widget()
+        plot_widget.configure(takefocus=True)
+        plot_widget.pack(fill="both", expand=True, padx=10, pady=(10, 0))
         self.canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
         self.canvas.mpl_connect("axes_leave_event", self._hide_cursor)
+        self.canvas.mpl_connect("button_press_event", self._on_plot_click)
+        self.canvas.mpl_connect("key_press_event", self._on_canvas_key_press)
 
-        toolbar = NavigationToolbar2Tk(self.canvas, plot_frame, pack_toolbar=False)
-        toolbar.update()
+        self.toolbar = NavigationToolbar2Tk(self.canvas, plot_frame, pack_toolbar=False)
+        self.toolbar.update()
         try:
-            toolbar.config(background=PANEL_BG)
-            for child in toolbar.winfo_children():
+            self.toolbar.config(background=PANEL_BG)
+            for child in self.toolbar.winfo_children():
                 try:
                     child.config(background=PANEL_BG, foreground="white")
                 except tk.TclError:
@@ -493,7 +592,7 @@ class TAViewer(ctk.CTk):
                         pass
         except tk.TclError:
             pass
-        toolbar.pack(fill="x", padx=10, pady=(4, 10))
+        self.toolbar.pack(fill="x", padx=10, pady=(4, 10))
 
     def _build_axis_group(
         self,
@@ -591,6 +690,7 @@ class TAViewer(ctk.CTk):
 
         self.file_var.set(str(path))
         self.clear_curves()
+        self._update_baseline_state_ui()
         self.time_scale.configure(
             from_=self.data.min_time_ns,
             to=self.data.max_time_ns,
@@ -791,7 +891,6 @@ class TAViewer(ctk.CTk):
         for line in lines:
             line.set_ydata(-np.asarray(line.get_ydata(), dtype=float))
         self.y_sign *= -1.0
-        self.y_offset = -self.y_offset
         self._hide_cursor()
         for ax in self._all_axes():
             if self._data_lines(ax):
@@ -799,26 +898,100 @@ class TAViewer(ctk.CTk):
         self.canvas.draw_idle()
         self.status_var.set("Flipped both plots along the y-axis (x -1).")
 
-    def shift_baseline(self, direction: int) -> None:
-        lines = self._all_data_lines()
-        if not lines:
-            messagebox.showwarning("No data", "Add at least one curve first.")
+    def toggle_baseline_correction(self) -> None:
+        if self.data is None:
+            messagebox.showwarning("No data", "Please load a data file first.")
             return
-        try:
-            step = float(self.baseline_step_var.get())
-        except ValueError:
-            messagebox.showerror(
-                "Invalid step", "Baseline shift step must be numeric."
+
+        if self.data.baseline_corrected:
+            self.data.clear_baseline_correction()
+            refreshed = self._refresh_all_curves()
+            self._update_baseline_state_ui()
+            self.status_var.set(
+                f"Baseline correction removed. Updated {refreshed} plotted curve(s)."
             )
             return
 
-        offset = direction * step
-        for line in lines:
-            line.set_ydata(np.asarray(line.get_ydata(), dtype=float) + offset)
-        self.y_offset += offset
+        try:
+            info = self.data.apply_baseline_correction()
+        except Exception as exc:
+            messagebox.showerror("Baseline correction failed", str(exc))
+            return
+
+        refreshed = self._refresh_all_curves()
+        self._update_baseline_state_ui()
+        t0_text = ""
+        if info["estimated_t0_ns"] is not None:
+            t0_text = f" Estimated t0: {info['estimated_t0_ns']:.6g} ns."
+        self.status_var.set(
+            "Baseline corrected per wavelength using "
+            f"{info['columns']} {info['method']} column(s) "
+            f"({info['time_low_ns']:.6g} to {info['time_high_ns']:.6g} ns)."
+            f"{t0_text} Updated {refreshed} plotted curve(s)."
+        )
+
+    def _refresh_all_curves(self) -> int:
+        refreshed = 0
+        refreshed += self._reaverage(MODE_SPECTRUM, update_status=False)
+        refreshed += self._reaverage(MODE_KINETICS, update_status=False)
         self._hide_cursor()
-        self.canvas.draw_idle()
-        self.status_var.set(f"Shifted baseline of both plots by {offset:+.6g}.")
+        if refreshed == 0:
+            self.canvas.draw_idle()
+        return refreshed
+
+    def _update_baseline_state_ui(self) -> None:
+        corrected = self.data.baseline_corrected if self.data is not None else False
+        if hasattr(self, "baseline_button"):
+            if corrected:
+                self.baseline_button.configure(
+                    text="Remove Baseline Correction",
+                    fg_color=BASELINE_NOTICE_COLOR,
+                    hover_color="#cc7f00",
+                    text_color="#0d0d0d",
+                )
+            else:
+                self.baseline_button.configure(
+                    text="Apply Baseline Correction",
+                    fg_color=ACCENT,
+                    hover_color="#249b6b",
+                    text_color="#0d0d0d",
+                )
+        self._update_baseline_notice()
+        if hasattr(self, "canvas"):
+            self.canvas.draw_idle()
+
+    def _update_baseline_notice(self) -> None:
+        for artist in self.baseline_notice_artists:
+            try:
+                artist.remove()
+            except (ValueError, RuntimeError):
+                pass
+        self.baseline_notice_artists.clear()
+
+        if self.data is None or not self.data.baseline_corrected:
+            return
+
+        for ax in self._all_axes():
+            artist = ax.text(
+                0.98,
+                0.90,
+                "BASELINE CORRECTED",
+                transform=ax.transAxes,
+                ha="right",
+                va="top",
+                color=BASELINE_NOTICE_COLOR,
+                fontsize=max(10, self.plot_font_size + 4),
+                fontweight="bold",
+                alpha=0.85,
+                zorder=1.1,
+                bbox={
+                    "boxstyle": "round,pad=0.35",
+                    "fc": BASELINE_NOTICE_COLOR,
+                    "ec": BASELINE_NOTICE_COLOR,
+                    "alpha": 0.14,
+                },
+            )
+            self.baseline_notice_artists.append(artist)
 
     # ------------------------------------------------------------------
     # JSON settings
@@ -883,9 +1056,10 @@ class TAViewer(ctk.CTk):
             "kin_x_max": self.kin_x_max_var.get(),
             "kin_y_min": self.kin_y_min_var.get(),
             "kin_y_max": self.kin_y_max_var.get(),
-            "baseline_step": self.baseline_step_var.get(),
+            "baseline_corrected": (
+                self.data.baseline_corrected if self.data is not None else False
+            ),
             "y_sign": self.y_sign,
-            "y_offset": self.y_offset,
             "curves": self._current_curves(),
         }
 
@@ -925,6 +1099,15 @@ class TAViewer(ctk.CTk):
             WAVELENGTH_WINDOWS,
         )
 
+        if settings.get("baseline_corrected") and self.data is not None:
+            try:
+                self.data.apply_baseline_correction()
+            except Exception as exc:
+                messagebox.showwarning(
+                    "Baseline correction skipped",
+                    f"Could not restore baseline correction: {exc}",
+                )
+
         if "curves" in settings:
             self._restore_curves(settings)
         else:
@@ -944,13 +1127,13 @@ class TAViewer(ctk.CTk):
             ("kin_x_max", self.kin_x_max_var),
             ("kin_y_min", self.kin_y_min_var),
             ("kin_y_max", self.kin_y_max_var),
-            ("baseline_step", self.baseline_step_var),
         ):
             if key in settings:
                 variable.set(str(settings[key]))
 
         self._sync_sliders_to_entries()
         self.apply_axis_limits()
+        self._update_baseline_state_ui()
 
     @staticmethod
     def _migrate_legacy_settings(settings: dict) -> dict:
@@ -977,16 +1160,11 @@ class TAViewer(ctk.CTk):
         if self.data is None:
             return
 
-        # clear_curves resets the transform, so restore flip/baseline before
-        # plotting so each curve renders with the saved transform applied.
+        # clear_curves resets the transform, so restore Flip Y before plotting.
         try:
             self.y_sign = -1.0 if float(settings.get("y_sign", 1.0)) < 0 else 1.0
         except (TypeError, ValueError):
             self.y_sign = 1.0
-        try:
-            self.y_offset = float(settings.get("y_offset", 0.0))
-        except (TypeError, ValueError):
-            self.y_offset = 0.0
 
         for curve in curves:
             if not isinstance(curve, dict):
@@ -1189,7 +1367,7 @@ class TAViewer(ctk.CTk):
             f"{self._format_average_range(time_low_ns, time_high_ns, 'ns')}"
         )
         (line,) = self.ax_spec.plot(
-            wavelengths, self.y_sign * spectrum + self.y_offset, label=label
+            wavelengths, self.y_sign * spectrum, label=label
         )
         self.curve_params[line] = {
             "mode": MODE_SPECTRUM,
@@ -1240,7 +1418,7 @@ class TAViewer(ctk.CTk):
         )
         (line,) = self.ax_kin.plot(
             times_ns,
-            self.y_sign * trace + self.y_offset,
+            self.y_sign * trace,
             marker="o",
             markersize=3,
             linewidth=1.3,
@@ -1272,11 +1450,11 @@ class TAViewer(ctk.CTk):
         for ax in self._all_axes():
             ax.clear()
         self.cursor_artists.clear()
+        self.plot_selected_curve = None
         self.spec_count = 0
         self.kin_count = 0
         self.curve_params.clear()
         self.y_sign = 1.0
-        self.y_offset = 0.0
         self._reset_axes()
         self._refresh_curve_selector()
         self.canvas.draw_idle()
@@ -1300,9 +1478,15 @@ class TAViewer(ctk.CTk):
             )
             return
 
+        self._delete_curve(target, target_ax)
+
+    def _delete_curve(self, target, target_ax) -> None:
+        deleted_label = target.get_label()
         mode = self.curve_params.get(target, {}).get("mode", MODE_SPECTRUM)
         target.remove()
         self.curve_params.pop(target, None)
+        if self.plot_selected_curve is target:
+            self.plot_selected_curve = None
 
         self._hide_cursor()
         self._reorder_curves(mode)
@@ -1311,13 +1495,14 @@ class TAViewer(ctk.CTk):
             self._autoscale_ax(target_ax)
         else:
             self._reset_axes_single(target_ax)
+            self._update_baseline_notice()
         self._refresh_curve_selector()
         self.canvas.draw_idle()
-        self.status_var.set(f"Deleted curve: {selected_label}")
+        self.status_var.set(f"Deleted curve: {deleted_label}")
 
-    def _reaverage(self, mode: str) -> None:
+    def _reaverage(self, mode: str, update_status: bool = True) -> int:
         if self.data is None:
-            return
+            return 0
         ax = self._ax_for_mode(mode)
         lines = [
             line
@@ -1325,7 +1510,7 @@ class TAViewer(ctk.CTk):
             if self.curve_params.get(line, {}).get("mode") == mode
         ]
         if not lines:
-            return
+            return 0
 
         if mode == MODE_SPECTRUM:
             window_label = self.window_var.get()
@@ -1344,7 +1529,7 @@ class TAViewer(ctk.CTk):
                         params["requested_time_ns"], half_columns
                     )
                 )
-                line.set_data(wavelengths, self.y_sign * spectrum + self.y_offset)
+                line.set_data(wavelengths, self.y_sign * spectrum)
                 new_label = (
                     f"S{params['number']}: "
                     f"{self._format_average_range(low_ns, high_ns, 'ns')}"
@@ -1355,7 +1540,7 @@ class TAViewer(ctk.CTk):
                         params["requested_wavelength_nm"], half_window_nm
                     )
                 )
-                line.set_data(times_ns, self.y_sign * trace + self.y_offset)
+                line.set_data(times_ns, self.y_sign * trace)
                 new_label = (
                     f"K{params['number']}: "
                     f"{self._format_average_range(low_nm, high_nm, 'nm')}"
@@ -1370,9 +1555,11 @@ class TAViewer(ctk.CTk):
         self._refresh_curve_selector(selected_after)
         self._autoscale_ax(ax)
         self.canvas.draw_idle()
-        self.status_var.set(
-            f"Re-averaged {len(lines)} {mode} curve(s) with {window_label}."
-        )
+        if update_status:
+            self.status_var.set(
+                f"Re-averaged {len(lines)} {mode} curve(s) with {window_label}."
+            )
+        return len(lines)
 
     def _reorder_curves(self, mode: str) -> None:
         ax = self._ax_for_mode(mode)
@@ -1445,6 +1632,7 @@ class TAViewer(ctk.CTk):
     def _reset_axes(self) -> None:
         self._reset_axes_single(self.ax_spec)
         self._reset_axes_single(self.ax_kin)
+        self._update_baseline_notice()
 
     def _reset_axes_single(self, ax) -> None:
         ax.set_facecolor(DARK_BG)
@@ -1509,16 +1697,25 @@ class TAViewer(ctk.CTk):
             "annotation": cursor_annotation,
         }
 
-    def _on_mouse_move(self, event) -> None:
+    def _toolbar_is_active(self) -> bool:
+        toolbar = getattr(self, "toolbar", None)
+        mode = getattr(toolbar, "mode", "")
+        return bool(getattr(mode, "value", mode))
+
+    def _ax_containing_line(self, target_line):
+        for ax in self._all_axes():
+            if target_line in self._data_lines(ax):
+                return ax
+        return None
+
+    def _nearest_curve_at_event(self, event, max_distance_px: float | None = None):
         ax = event.inaxes
         if ax not in self._all_axes() or event.xdata is None:
-            self._hide_cursor()
-            return
+            return None
 
         lines = self._data_lines(ax)
         if not lines:
-            self._hide_cursor()
-            return
+            return None
 
         nearest = None
         for line in lines:
@@ -1537,18 +1734,64 @@ class TAViewer(ctk.CTk):
             x_pixel, y_pixel = ax.transData.transform((x_val, y_val))
             distance_px = ((x_pixel - event.x) ** 2 + (y_pixel - event.y) ** 2) ** 0.5
             if nearest is None or distance_px < nearest[0]:
-                nearest = (distance_px, x_val, y_val, line.get_label())
+                nearest = (distance_px, line, x_val, y_val)
 
+        if nearest is None:
+            return None
+
+        if max_distance_px is None:
+            max_distance_px = 80 * self.ui_scale
+        if nearest[0] > max_distance_px:
+            return None
+
+        _distance_px, line, x_val, y_val = nearest
+        return ax, line, x_val, y_val
+
+    def _on_plot_click(self, event) -> None:
+        if event.button != 1:
+            return
+        self.canvas.get_tk_widget().focus_set()
+        if self._toolbar_is_active():
+            return
+
+        nearest = self._nearest_curve_at_event(event, max_distance_px=20 * self.ui_scale)
+        if nearest is None:
+            self.plot_selected_curve = None
+            self.status_var.set("Click close to a curve to select it before pressing D.")
+            return
+
+        _ax, line, _x_val, _y_val = nearest
+        self.plot_selected_curve = line
+        self.curve_select_var.set(line.get_label())
+        self.status_var.set(
+            f"Selected curve: {line.get_label()}. Press D while the plot is focused to delete it."
+        )
+
+    def _on_canvas_key_press(self, event) -> None:
+        key = (event.key or "").lower()
+        if key != "d" or self._toolbar_is_active():
+            return
+
+        if self.plot_selected_curve is None:
+            self.status_var.set("Click a curve on the plot first, then press D to delete it.")
+            return
+
+        target_ax = self._ax_containing_line(self.plot_selected_curve)
+        if target_ax is None:
+            self.plot_selected_curve = None
+            self.status_var.set("Selected curve no longer exists. Click another curve first.")
+            return
+
+        self._delete_curve(self.plot_selected_curve, target_ax)
+
+    def _on_mouse_move(self, event) -> None:
+        nearest = self._nearest_curve_at_event(event)
         if nearest is None:
             self._hide_cursor()
             return
 
-        max_distance_px = 80 * self.ui_scale
-        if nearest[0] > max_distance_px:
-            self._hide_cursor()
-            return
-
-        _, x_val, y_val, label = nearest
+        ax, line, x_val, y_val = nearest
+        label = line.get_label()
         self._init_cursor_artists(ax)
         # Hide cursors on the other subplot so only one shows at a time.
         for other_ax, artists in self.cursor_artists.items():
