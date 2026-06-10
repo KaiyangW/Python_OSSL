@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 import os
 import re
+import sys
 import auto_threshold_module as atm #auto-threshold check
 import pandas as pd
 import numpy as np
@@ -16,6 +17,12 @@ import json
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
+_READER_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _READER_ROOT not in sys.path:
+    sys.path.insert(0, _READER_ROOT)
+
+from Read_data_unified import read_grid, read_xy
 
 try:
     trapz = np.trapezoid
@@ -90,6 +97,31 @@ def find_files_fuzzy(folder, keywords):
     except Exception:
         return []
     return sorted(matches)
+
+def load_energy_csv(path):
+    spectrum = read_xy(path)
+    return spectrum.x, spectrum.y
+
+def load_spec_matrix(path):
+    transpose = "transpose" in os.path.basename(path).lower()
+    grid = read_grid(path, layout="ase_spec_matrix", transpose=transpose)
+    return grid.col_values.astype(float), grid.data.astype(float), grid.meta.get("frame_metadata")
+
+def frame_metadata_column(frame_metadata, column_index, n_frames):
+    values = np.full(n_frames, np.nan, dtype=float)
+    if frame_metadata is None:
+        return values
+    arr = np.asarray(frame_metadata, dtype=object)
+    if arr.ndim != 2 or arr.shape[1] <= column_index:
+        return values
+    converted = pd.to_numeric(arr[:, column_index], errors='coerce').to_numpy(dtype=float)
+    n = min(n_frames, converted.size)
+    values[:n] = converted[:n]
+    return values
+
+def load_integ_columns(path):
+    spectrum = read_xy(path, usecols=(1, 2))
+    return spectrum.x, spectrum.y
 
 def calculate_robust_fwhm(wavelength, intensity, window_list):
     if len(intensity) == 0 or np.all(np.isnan(intensity)):
@@ -518,9 +550,7 @@ class LaserAnalysisApp(ctk.CTk):
             efiles = find_files_fuzzy(folder, ["energy"])
             if not efiles: self.log("  [Skip] No energy file."); return
             try:
-                df_en = pd.read_csv(efiles[0], header=None)
-                angle = df_en.iloc[:, 0].values
-                raw_en = df_en.iloc[:, 1].values
+                angle, raw_en = load_energy_csv(efiles[0])
                 pump = eval(cfg['formula'], {}, {'energy': raw_en, 'beam_size': cfg['beam_size'], 'ND': cfg['nd'], 'np': np})
             except Exception as e: self.log(f"  [Error] Energy calc: {e}"); return
 
@@ -530,20 +560,11 @@ class LaserAnalysisApp(ctk.CTk):
             
             if any("transpose" in os.path.basename(f).lower() for f in spec_files):
                 f_path = [f for f in spec_files if "transpose" in os.path.basename(f).lower()][0]
-                df_s = pd.read_csv(f_path, header=None)
-                full_wave = df_s.iloc[3:, -1].values.astype(float) # nm
-                int_matrix_T = df_s.iloc[3:, :-1].values.astype(float) 
-                int_matrix = int_matrix_T.T 
-                spec_angles_full = pd.to_numeric(df_s.iloc[0, :-1], errors='coerce').to_numpy()
-                spec_col2_full = pd.to_numeric(df_s.iloc[2, :-1], errors='coerce').to_numpy()
             else:
                 f_path = spec_files[0]
-                df_s = pd.read_csv(f_path, header=None)
-                full_wave = df_s.iloc[-1, 3:].values.astype(float) # nm
-                int_matrix = df_s.iloc[:-1, 3:].values.astype(float)
-                spec_meta_rows = df_s.iloc[:-1]
-                spec_angles_full = pd.to_numeric(spec_meta_rows.iloc[:, 0], errors='coerce').to_numpy()
-                spec_col2_full = pd.to_numeric(spec_meta_rows.iloc[:, 2], errors='coerce').to_numpy()
+            full_wave, int_matrix, frame_metadata = load_spec_matrix(f_path)
+            spec_angles_full = frame_metadata_column(frame_metadata, 0, int_matrix.shape[0])
+            spec_col2_full = frame_metadata_column(frame_metadata, 2, int_matrix.shape[0])
 
             n_pts = min(len(pump), int_matrix.shape[0])
             if n_pts == 0: self.log("  [Error] No overlap."); return
@@ -556,10 +577,10 @@ class LaserAnalysisApp(ctk.CTk):
             int_files = find_files_fuzzy(folder, ["integ"])
             if int_files:
                 try:
-                    df_i = pd.read_csv(int_files[0], header=None)
-                    n_lv = min(len(df_i), n_pts)
-                    lv_c[:n_lv] = df_i.iloc[:n_lv, 1].values
-                    lv_f[:n_lv] = df_i.iloc[:n_lv, 2].values
+                    integ_c, integ_f = load_integ_columns(int_files[0])
+                    n_lv = min(len(integ_c), n_pts)
+                    lv_c[:n_lv] = integ_c[:n_lv]
+                    lv_f[:n_lv] = integ_f[:n_lv]
                 except: pass
 
             # ====================================================

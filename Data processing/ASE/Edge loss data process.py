@@ -1,4 +1,5 @@
 import os
+import sys
 import pandas as pd
 import numpy as np
 import tkinter as tk
@@ -6,6 +7,12 @@ from tkinter import filedialog
 import ctypes
 import re
 import traceback
+
+_READER_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _READER_ROOT not in sys.path:
+    sys.path.insert(0, _READER_ROOT)
+
+from Read_data_unified import read_grid
 
 # -----------------------------------------------------------------------------
 # 有机激光 ASE Edge Loss 数据处理脚本 (v2.0)
@@ -39,17 +46,18 @@ def process_single_csv(file_path, label_name):
     处理单个 spectrum.csv 文件的核心逻辑
     """
     try:
-        df = pd.read_csv(file_path, header=None)
-        
-        # 提取数据区域
-        wavelength_row = pd.to_numeric(df.iloc[-1], errors='coerce') # 确保波长是数值
-        data_rows = df.iloc[:-1].apply(pd.to_numeric, errors='coerce') # 确保数据是数值
-        
-        if data_rows.empty:
+        # 此格式前 2 列是元数据（第 0 列为距离），波长轴/光谱数据从第 3 列开始
+        grid = read_grid(file_path, layout="ase_spec_matrix", transpose=False, meta_rows=2)
+        wavelength_axis = grid.col_values.astype(float)
+        int_matrix = grid.data.astype(float)
+        frame_meta = np.asarray(grid.meta.get("frame_metadata"), dtype=object)
+
+        if int_matrix.shape[0] == 0:
             print(f"警告: {label_name} 数据为空")
             return None
 
-        base_distance = data_rows.iloc[0, 0]
+        distances = pd.to_numeric(pd.Series(frame_meta[:, 0]), errors='coerce').to_numpy(dtype=float)
+        base_distance = distances[0]
         current_data = []
         
         # [修改] 插入单位行，增加一列 ln(a.u.)
@@ -58,12 +66,9 @@ def process_single_csv(file_path, label_name):
         last_valid_wavelength = None # 用于记录上一个有效的波长
         low_int_skip_count = 0      # 低强度跳过计数
 
-        # 提取波长轴 (从第三列开始)
-        wavelength_axis = wavelength_row.iloc[2:].values
-
-        for index, row in data_rows.iterrows():
-            distance = row[0] - base_distance
-            intensity_data = row.iloc[2:].values
+        for i in range(int_matrix.shape[0]):
+            distance = distances[i] - base_distance
+            intensity_data = int_matrix[i]
             
             # 1. 寻找波峰波长
             max_idx = np.argmax(intensity_data)

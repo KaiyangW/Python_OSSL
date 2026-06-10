@@ -593,6 +593,7 @@ def _read_ase_spec_matrix(path, transpose=None, meta_rows=3, **_):
 
     if transpose:
         waves = _to_float_array(raw[meta_rows:, -1])
+        frame_metadata = raw[:meta_rows, :-1].T
         block = raw[meta_rows:, :-1]
         intensity_T = np.empty(block.shape, dtype=float)
         for j in range(block.shape[1]):
@@ -600,6 +601,7 @@ def _read_ase_spec_matrix(path, transpose=None, meta_rows=3, **_):
         intensity = intensity_T.T  # frames x wavelength
     else:
         waves = _to_float_array(raw[-1, meta_rows:])
+        frame_metadata = raw[:-1, :meta_rows]
         block = raw[:-1, meta_rows:]
         intensity = np.empty(block.shape, dtype=float)
         for i in range(block.shape[0]):
@@ -611,7 +613,7 @@ def _read_ase_spec_matrix(path, transpose=None, meta_rows=3, **_):
         {"source_format": "ase_spec_matrix", "encoding": enc, "path": str(path),
          "row_label": "Frame", "col_label": "Wavelength_nm",
          "layout": "ase_transpose" if transpose else "ase_normal",
-         "meta_rows": meta_rows},
+         "meta_rows": meta_rows, "frame_metadata": frame_metadata},
     )
 
 

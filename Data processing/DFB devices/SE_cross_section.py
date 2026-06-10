@@ -41,6 +41,12 @@ from tkinter import filedialog, messagebox
 import tkinter.font as tkfont
 import customtkinter as ctk
 
+_READER_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _READER_ROOT not in sys.path:
+    sys.path.insert(0, _READER_ROOT)
+
+from Read_data_unified import read_xy
+
 
 # --------------------------------------------------------------------------- #
 #  Physical constants (CGS)
@@ -71,28 +77,9 @@ def read_pl_file(path):
     wl : ndarray  -- wavelength [nm], sorted ascending
     pl : ndarray  -- intensity / counts (arbitrary units)
     """
-    wls, pls = [], []
-    with open(path, "r", encoding="utf-8-sig", errors="replace") as fh:
-        for line in fh:
-            parts = line.replace("\t", ",").split(",")
-            if len(parts) < 2:
-                continue
-            try:
-                w = float(parts[0])
-                p = float(parts[1])
-            except ValueError:
-                continue
-            wls.append(w)
-            pls.append(p)
-
-    if len(wls) < 2:
-        raise ValueError("Could not find at least two numeric data rows in "
-                         "the PL file. Check the file format.")
-
-    wl = np.asarray(wls, dtype=float)
-    pl = np.asarray(pls, dtype=float)
-    order = np.argsort(wl)
-    return wl[order], pl[order]
+    spectrum = read_xy(path)
+    order = np.argsort(spectrum.x)
+    return spectrum.x[order], spectrum.y[order]
 
 
 def read_nk_file(path):
@@ -108,28 +95,9 @@ def read_nk_file(path):
     wl : ndarray  -- wavelength [nm], sorted ascending
     n  : ndarray  -- refractive index
     """
-    wls, ns = [], []
-    with open(path, "r", encoding="utf-8-sig", errors="replace") as fh:
-        for line in fh:
-            parts = line.replace(",", " ").split()
-            if len(parts) < 2:
-                continue
-            try:
-                w = float(parts[0])
-                nn = float(parts[1])
-            except ValueError:
-                continue
-            wls.append(w)
-            ns.append(nn)
-
-    if len(wls) < 2:
-        raise ValueError("Could not find at least two numeric data rows in "
-                         "the n,k file. Check the file format.")
-
-    wl = np.asarray(wls, dtype=float)
-    n = np.asarray(ns, dtype=float)
-    order = np.argsort(wl)
-    return wl[order], n[order]
+    spectrum = read_xy(path, format="whitespace_xy")
+    order = np.argsort(spectrum.x)
+    return spectrum.x[order], spectrum.y[order]
 
 
 # --------------------------------------------------------------------------- #

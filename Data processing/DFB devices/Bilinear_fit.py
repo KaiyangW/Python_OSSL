@@ -9,8 +9,15 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from scipy.optimize import curve_fit
 import os
 import re
+import sys
 
 matplotlib.use('TkAgg')
+
+_READER_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _READER_ROOT not in sys.path:
+    sys.path.insert(0, _READER_ROOT)
+
+from Read_data_unified import read_workbook
 
 # Enable High DPI awareness on Windows
 import ctypes
@@ -175,9 +182,9 @@ class ManualThresholdApp(ctk.CTk):
         try:
             # Try 'Metrics' sheet first, then default to the first sheet (Sheet1)
             try:
-                df = pd.read_excel(filepath, sheet_name='Metrics')
+                df = read_workbook(filepath, sheet='Metrics')
             except Exception:
-                df = pd.read_excel(filepath, sheet_name=0)
+                df = read_workbook(filepath, sheet=0)
 
             # Identification logic for Oceanoptics data process.py format
             if 'Integrated Intensity (PL Removed)' in df.columns:
