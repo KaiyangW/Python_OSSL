@@ -18,6 +18,12 @@ from risc_calculator_bridge import (
     create_lifetime_fit_figure, BTN_FIT_RECT, BTN_SAVE_RECT,
 )
 
+_READER_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if _READER_ROOT not in sys.path:
+    sys.path.insert(0, _READER_ROOT)
+
+from Read_data_unified import read_xy
+
 # Enable High DPI awareness on Windows
 try:
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
@@ -56,25 +62,8 @@ plt.rcParams.update({
 
 def load_fluoracle_csv(filepath):
     try:
-        start_row = 0
-        with open(filepath, 'r', encoding='utf-8-sig', errors='replace') as f:
-            for i, line in enumerate(f):
-                parts = line.replace('\t', ',').split(',')
-                if len(parts) >= 2:
-                    try:
-                        float(parts[0].strip())
-                        float(parts[1].strip())
-                        start_row = i
-                        break  
-                    except ValueError:
-                        pass
-        
-        df = pd.read_csv(filepath, skiprows=start_row, header=None, usecols=[0, 1], engine='python')
-        df.columns = ['Time', 'Counts']
-        
-        df['Time'] = pd.to_numeric(df['Time'], errors='coerce')
-        df['Counts'] = pd.to_numeric(df['Counts'], errors='coerce')
-        df = df.dropna()
+        spectrum = read_xy(filepath, format="fluoracle_decay")
+        df = pd.DataFrame({"Time": spectrum.x, "Counts": spectrum.y})
         
         if df.empty:
             raise ValueError("No valid numeric data found in the file.")

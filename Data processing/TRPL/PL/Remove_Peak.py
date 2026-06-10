@@ -4,7 +4,6 @@
 
 from pathlib import Path
 import argparse
-import csv
 import json
 import sys
 import ctypes
@@ -26,6 +25,12 @@ except ImportError:
     tk = None
     filedialog = None
     messagebox = None
+
+_READER_ROOT = Path(__file__).resolve().parents[2]
+if str(_READER_ROOT) not in sys.path:
+    sys.path.insert(0, str(_READER_ROOT))
+
+from Read_data_unified import read_xy
 
 
 HC_EV_NM = 1240.0
@@ -60,65 +65,19 @@ def choose_csv_file(title, initial_dir=None):
     return Path(filepath) if filepath else None
 
 
-def _try_read_rows(path, encoding):
-    with Path(path).open("r", encoding=encoding, newline="") as handle:
-        sample = handle.read(4096)
-        handle.seek(0)
-        try:
-            dialect = csv.Sniffer().sniff(sample, delimiters=",\t;")
-        except csv.Error:
-            dialect = csv.excel
-        return list(csv.reader(handle, dialect))
-
-
 def load_spectrum(path, min_numeric_rows=5):
     """Load spectrum and auto-detect first two numeric columns robustly."""
     path = Path(path)
-    encodings = ["utf-8-sig", "windows-1252", "latin-1"]
-    last_error = None
-    rows = None
+    spectrum = read_xy(path)
+    if len(spectrum) < min_numeric_rows:
+        raise ValueError(f"found only {len(spectrum)} numeric wavelength/intensity rows in {path}")
 
-    for encoding in encodings:
-        try:
-            rows = _try_read_rows(path, encoding=encoding)
-            break
-        except UnicodeDecodeError as exc:
-            last_error = exc
-            continue
-
-    if rows is None:
-        if last_error is not None:
-            raise UnicodeDecodeError(
-                last_error.encoding,
-                last_error.object,
-                last_error.start,
-                last_error.end,
-                f"Could not decode {path} with attempted encodings.",
-            )
-        raise ValueError(f"Failed to read {path}")
-
-    if not rows:
-        raise ValueError(f"{path} is empty.")
-
-    max_cols = max(len(row) for row in rows)
-    numeric = np.full((len(rows), max_cols), np.nan, dtype=float)
-    for i, row in enumerate(rows):
-        for j, cell in enumerate(row):
-            numeric[i, j] = pd.to_numeric(str(cell).strip(), errors="coerce")
-
-    numeric_counts = np.sum(np.isfinite(numeric), axis=0)
-    candidate_cols = [idx for idx, count in enumerate(numeric_counts) if count >= min_numeric_rows]
-    if len(candidate_cols) < 2:
-        raise ValueError(f"Could not find two numeric columns in {path}.")
-
-    wavelength_col, intensity_col = candidate_cols[0], candidate_cols[1]
     spectrum = pd.DataFrame(
         {
-            "wavelength_nm": numeric[:, wavelength_col],
-            "intensity": numeric[:, intensity_col],
+            "wavelength_nm": spectrum.x,
+            "intensity": spectrum.y,
         }
     )
-    spectrum = spectrum.dropna()
     spectrum = spectrum[spectrum["wavelength_nm"] > 0]
     spectrum = spectrum.sort_values("wavelength_nm").drop_duplicates("wavelength_nm")
     spectrum = spectrum.reset_index(drop=True)

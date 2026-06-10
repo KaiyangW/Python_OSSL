@@ -1,9 +1,15 @@
 """PL onset detection using the Tangent-Baseline Intersection method."""
 
-import csv
+import sys
 from pathlib import Path
 
 import numpy as np
+
+_READER_ROOT = Path(__file__).resolve().parents[2]
+if str(_READER_ROOT) not in sys.path:
+    sys.path.insert(0, str(_READER_ROOT))
+
+from Read_data_unified import read_xy
 
 try:
     from filters import smooth_savgol
@@ -12,17 +18,6 @@ except ImportError:  # Allows package-style imports if this folder is packaged l
 
 
 HC_EV_NM = 1240.0
-
-
-def _parse_float(value):
-    """Return a float for numeric CSV fields, otherwise None."""
-    try:
-        text = str(value).strip()
-        if text == "":
-            return None
-        return float(text)
-    except (TypeError, ValueError):
-        return None
 
 
 def load_pl_numeric_rows(filepath, x_col=0, y_col=1, encoding=None):
@@ -58,67 +53,23 @@ def load_pl_numeric_rows(filepath, x_col=0, y_col=1, encoding=None):
         skipped before numeric data was found.
     """
     path = Path(filepath)
-    encodings = [encoding] if encoding is not None else ["utf-8-sig", "windows-1252", "latin-1"]
-    last_error = None
+    spectrum = read_xy(path, encoding=encoding, usecols=(x_col, y_col))
 
-    for candidate_encoding in encodings:
-        try:
-            with path.open("r", encoding=candidate_encoding, newline="") as handle:
-                sample = handle.read(4096)
-                handle.seek(0)
-                try:
-                    dialect = csv.Sniffer().sniff(sample, delimiters=",\t;")
-                except csv.Error:
-                    dialect = csv.excel
+    if len(spectrum) < 5:
+        raise ValueError(f"found only {len(spectrum)} numeric x/y rows in {path}")
 
-                x_values = []
-                y_values = []
-                first_numeric_line = None
-                skipped_rows = 0
-
-                for line_number, row in enumerate(csv.reader(handle, dialect), start=1):
-                    required_col = max(x_col, y_col)
-                    if len(row) <= required_col:
-                        skipped_rows += 1
-                        continue
-
-                    x_value = _parse_float(row[x_col])
-                    y_value = _parse_float(row[y_col])
-
-                    if x_value is None or y_value is None:
-                        skipped_rows += 1
-                        continue
-
-                    if first_numeric_line is None:
-                        first_numeric_line = line_number
-
-                    x_values.append(x_value)
-                    y_values.append(y_value)
-
-            if len(x_values) < 5:
-                raise ValueError(f"found only {len(x_values)} numeric x/y rows in {path}")
-
-            metadata = {
-                "filepath": str(path),
-                "encoding": candidate_encoding,
-                "first_numeric_line": first_numeric_line,
-                "skipped_rows": skipped_rows,
-                "n_points": len(x_values),
-                "x_col": x_col,
-                "y_col": y_col,
-            }
-            return np.asarray(x_values, dtype=float), np.asarray(y_values, dtype=float), metadata
-        except UnicodeDecodeError as exc:
-            last_error = exc
-            continue
-
-    raise UnicodeDecodeError(
-        last_error.encoding,
-        last_error.object,
-        last_error.start,
-        last_error.end,
-        f"could not decode {path} with the attempted encodings",
-    )
+    data_start_row = spectrum.meta.get("data_start_row")
+    metadata = {
+        "filepath": str(path),
+        "encoding": spectrum.meta.get("encoding"),
+        "first_numeric_line": None if data_start_row is None else int(data_start_row) + 1,
+        "skipped_rows": data_start_row,
+        "n_points": len(spectrum),
+        "x_col": x_col,
+        "y_col": y_col,
+        "source_format": spectrum.meta.get("source_format"),
+    }
+    return spectrum.x, spectrum.y, metadata
 
 
 def _clean_and_sort_xy(x, y):

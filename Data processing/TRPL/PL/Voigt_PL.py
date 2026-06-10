@@ -3,6 +3,7 @@ import ctypes
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -34,6 +35,12 @@ try:
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
 except Exception:
     pass
+
+_READER_ROOT = Path(__file__).resolve().parents[2]
+if str(_READER_ROOT) not in sys.path:
+    sys.path.insert(0, str(_READER_ROOT))
+
+from Read_data_unified import read_xy
 
 # 物理常数与 gamma 扫描网格（eV）
 HC_EV_NM = 1239.8
@@ -95,52 +102,20 @@ def compute_linewidth_metrics(sigma_ev, gamma_ev):
 
 def load_pl_csv(filepath):
     """读取 PL 光谱 CSV/TXT（第一列波长 nm，第二列强度）。"""
-    scan_type = ""
-    data_start_row = -1
-    is_uvvis = False
-
-    with open(filepath, "r", encoding="windows-1252") as f:
-        for i, line in enumerate(f):
-            parts = [p.strip() for p in line.replace("\t", ",").split(",")]
-
-            if i == 1 and len(parts) >= 2:
-                scan_type = parts[1].lower()
-
-            if i == 2 and len(parts) >= 2 and parts[1].lower() == "jasco":
-                is_uvvis = True
-                scan_type = "uv-vis"
-
-            if is_uvvis:
-                if "xydata" in line.lower():
-                    data_start_row = i + 1
-                    break
-            elif len(parts) >= 2:
-                try:
-                    float(parts[0])
-                    float(parts[1])
-                    data_start_row = i
-                    break
-                except ValueError:
-                    pass
-
-    if data_start_row == -1:
-        raise ValueError(f"无法在 {os.path.basename(filepath)} 中定位数值数据起始行")
-
-    df = pd.read_csv(
-        filepath,
-        skiprows=data_start_row,
-        header=None,
-        usecols=[0, 1],
-        engine="python",
-        encoding="windows-1252",
-    )
-    df.columns = ["Wavelength_nm", "Intensity"]
-    df["Wavelength_nm"] = pd.to_numeric(df["Wavelength_nm"], errors="coerce")
-    df["Intensity"] = pd.to_numeric(df["Intensity"], errors="coerce")
-    df = df.dropna().reset_index(drop=True)
+    spectrum = read_xy(filepath)
+    df = pd.DataFrame(
+        {
+            "Wavelength_nm": spectrum.x,
+            "Intensity": spectrum.y,
+        }
+    ).dropna().reset_index(drop=True)
 
     if df.empty:
         raise ValueError(f"{os.path.basename(filepath)} 中没有有效数值数据")
+
+    scan_type = spectrum.meta.get("scan_type", "")
+    if not scan_type and spectrum.meta.get("source_format") == "jasco_uvvis":
+        scan_type = "uv-vis"
 
     return df, scan_type
 
