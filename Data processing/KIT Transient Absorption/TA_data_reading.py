@@ -66,10 +66,56 @@ def enable_high_dpi_awareness() -> None:
             pass
 
 
+class _Tooltip:
+    """Lightweight hover tooltip so the compact icon buttons stay discoverable."""
+
+    def __init__(self, widget, text: str):
+        self.widget = widget
+        self.text = text
+        self._tip: tk.Toplevel | None = None
+        widget.bind("<Enter>", self._show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def set_text(self, text: str) -> None:
+        self.text = text
+
+    def _show(self, _event=None) -> None:
+        if self._tip is not None or not self.text:
+            return
+        x = self.widget.winfo_rootx() + self.widget.winfo_width() + 6
+        y = self.widget.winfo_rooty()
+        self._tip = tk.Toplevel(self.widget)
+        self._tip.wm_overrideredirect(True)
+        try:
+            self._tip.wm_attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        self._tip.wm_geometry(f"+{x}+{y}")
+        tk.Label(
+            self._tip,
+            text=self.text,
+            background="#000000",
+            foreground="#ffffff",
+            relief="solid",
+            borderwidth=1,
+            padx=6,
+            pady=3,
+            font=("Segoe UI", 9),
+        ).pack()
+
+    def _hide(self, _event=None) -> None:
+        if self._tip is not None:
+            self._tip.destroy()
+            self._tip = None
+
+
 class TAData:
     def __init__(self, path: Path):
         self.path = path
         self.times_s: np.ndarray
+        self.base_times_s: np.ndarray
+        self.time_shift_ns = 0.0
         self.wavelengths_nm: np.ndarray
         self.raw_signal: np.ndarray
         self.signal: np.ndarray
@@ -97,7 +143,9 @@ class TAData:
             )
 
         self.path = path
-        self.times_s = times[valid_time]
+        self.base_times_s = times[valid_time]
+        self.time_shift_ns = 0.0
+        self.times_s = self.base_times_s.copy()
         self.wavelengths_nm = wavelengths[valid_wavelength]
         self.raw_signal = signal[np.ix_(valid_wavelength, valid_time)].copy()
         self.signal = self.raw_signal.copy()
@@ -140,6 +188,12 @@ class TAData:
         self.baseline_vector = None
         self.baseline_mask = None
         self.baseline_t0_ns = None
+
+    def set_time_shift(self, shift_ns: float) -> None:
+        # Rebuild the time axis from the untouched base times so repeated shifts
+        # do not accumulate floating-point drift.
+        self.time_shift_ns = float(shift_ns)
+        self.times_s = self.base_times_s + self.time_shift_ns * 1e-9
 
     def _baseline_column_mask(self) -> tuple[np.ndarray, float | None, str]:
         finite_time = np.isfinite(self.times_s)
@@ -324,6 +378,7 @@ class TAViewer(ctk.CTk):
         self.window_var = tk.StringVar(value="+/-1 col (3 total)")
         self.wavelength_var = tk.StringVar(value="500")
         self.wavelength_window_var = tk.StringVar(value="2 nm")
+        self.time_shift_step_var = tk.StringVar(value="0.1")
 
         # Independent axis ranges per subplot (blank = autoscale).
         self.spec_x_min_var = tk.StringVar(value=f"{DEFAULT_SPECTRUM_X_MIN_NM:g}")
@@ -357,104 +412,123 @@ class TAViewer(ctk.CTk):
     def _build_ui(self) -> None:
         sidebar = ctk.CTkScrollableFrame(
             self,
-            width=340,
+            width=300,
             label_text="Controls",
             scrollbar_button_color=ACCENT,
             scrollbar_button_hover_color="#249b6b",
         )
-        sidebar.pack(side="left", fill="y", padx=10, pady=10)
+        sidebar.pack(side="left", fill="y", padx=8, pady=8)
+
+        pad = 8
+        btn_h = 28
+        wrap = 250
+        icon_font = ctk.CTkFont(size=16)
+
+        def section(text: str, top: int = 10) -> None:
+            ctk.CTkLabel(
+                sidebar,
+                text=text,
+                anchor="w",
+                font=ctk.CTkFont(size=12, weight="bold"),
+            ).pack(fill="x", padx=pad, pady=(top, 2))
+
+        def grid3() -> ctk.CTkFrame:
+            frame = ctk.CTkFrame(sidebar, fg_color="transparent")
+            frame.pack(fill="x", padx=pad, pady=2)
+            frame.grid_columnconfigure((0, 1, 2), weight=1, uniform="icons")
+            return frame
+
+        def icon_btn(parent, glyph: str, command, tip: str, **kwargs):
+            button = ctk.CTkButton(
+                parent,
+                text=glyph,
+                command=command,
+                width=40,
+                height=34,
+                font=icon_font,
+                **kwargs,
+            )
+            button._tooltip = self._add_tooltip(button, tip)
+            return button
 
         # --- Data file ---
-        ctk.CTkLabel(sidebar, text="Data file", anchor="w").pack(
-            fill="x", padx=10, pady=(10, 2)
+        section("Data file", top=4)
+        file_row = ctk.CTkFrame(sidebar, fg_color="transparent")
+        file_row.pack(fill="x", padx=pad, pady=2)
+        file_row.grid_columnconfigure(0, weight=1)
+        self.file_entry = ctk.CTkEntry(
+            file_row, textvariable=self.file_var, height=btn_h
         )
-        self.file_entry = ctk.CTkEntry(sidebar, textvariable=self.file_var)
-        self.file_entry.pack(fill="x", padx=10, pady=2)
-        ctk.CTkButton(sidebar, text="Browse", command=self._browse_file).pack(
-            fill="x", padx=10, pady=4
-        )
-        ctk.CTkButton(sidebar, text="Load", command=self._load_file_from_entry).pack(
-            fill="x", padx=10, pady=(0, 12)
-        )
+        self.file_entry.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        icon_btn(
+            file_row, "\U0001F4C2", self._browse_file, "Browse for data file"
+        ).grid(row=0, column=1)
 
         # --- Curve management ---
-        ctk.CTkLabel(sidebar, text="Curves", anchor="w").pack(
-            fill="x", padx=10, pady=(6, 2)
-        )
+        section("Curves")
         self.curve_select_menu = ctk.CTkOptionMenu(
             sidebar,
             variable=self.curve_select_var,
             values=["No curves"],
+            height=btn_h,
         )
-        self.curve_select_menu.pack(fill="x", padx=10, pady=(0, 4))
-        ctk.CTkButton(
-            sidebar,
-            text="Delete Selected Curve",
-            command=self.delete_selected_curve,
-            fg_color=ACCENT_RED,
-            hover_color="#9b2436",
-        ).pack(fill="x", padx=10, pady=(0, 4))
-        ctk.CTkButton(
-            sidebar, text="Clear Curves", command=self.clear_curves,
+        self.curve_select_menu.pack(fill="x", padx=pad, pady=2)
+        row = grid3()
+        icon_btn(
+            row, "\U0001F5D1", self.delete_selected_curve, "Delete selected curve",
+            fg_color=ACCENT_RED, hover_color="#9b2436",
+        ).grid(row=0, column=0)
+        icon_btn(
+            row, "\U0001F9F9", self.clear_curves, "Clear all curves",
             fg_color="gray30", hover_color="gray25",
-        ).pack(fill="x", padx=10, pady=(0, 12))
+        ).grid(row=0, column=1)
 
         # --- Time controls (spectrum curves) ---
-        ctk.CTkLabel(sidebar, text="Time (ns)", anchor="w").pack(
-            fill="x", padx=10, pady=(6, 2)
-        )
-        time_entry = ctk.CTkEntry(sidebar, textvariable=self.time_var)
-        time_entry.pack(fill="x", padx=10, pady=2)
+        section("Time (ns) \u2192 Spectra")
+        time_entry = ctk.CTkEntry(sidebar, textvariable=self.time_var, height=btn_h)
+        time_entry.pack(fill="x", padx=pad, pady=2)
         time_entry.bind("<Return>", lambda _event: self.add_spectrum())
         self.time_scale = ctk.CTkSlider(
             sidebar, from_=0, to=1, command=self._scale_changed
         )
-        self.time_scale.pack(fill="x", padx=10, pady=4)
-
-        ctk.CTkLabel(sidebar, text="Time average (columns)", anchor="w").pack(
-            fill="x", padx=10, pady=(2, 2)
-        )
+        self.time_scale.pack(fill="x", padx=pad, pady=4)
+        spec_row = ctk.CTkFrame(sidebar, fg_color="transparent")
+        spec_row.pack(fill="x", padx=pad, pady=2)
+        spec_row.grid_columnconfigure(0, weight=1)
         ctk.CTkOptionMenu(
-            sidebar,
-            variable=self.window_var,
-            values=list(AVERAGE_WINDOWS),
-            command=lambda _value: self._reaverage(MODE_SPECTRUM),
-        ).pack(fill="x", padx=10, pady=(0, 4))
-        ctk.CTkButton(
-            sidebar, text="Add Spectrum (at time)", command=self.add_spectrum,
+            spec_row, variable=self.window_var, values=list(AVERAGE_WINDOWS),
+            command=lambda _value: self._reaverage(MODE_SPECTRUM), height=btn_h,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        icon_btn(
+            spec_row, "\u2795", self.add_spectrum, "Add spectrum at this time",
             fg_color=ACCENT, hover_color="#249b6b", text_color="#0d0d0d",
-        ).pack(fill="x", padx=10, pady=(0, 12))
+        ).grid(row=0, column=1)
 
         # --- Wavelength controls (kinetics curves) ---
-        ctk.CTkLabel(sidebar, text="Wavelength (nm)", anchor="w").pack(
-            fill="x", padx=10, pady=(6, 2)
+        section("Wavelength (nm) \u2192 Kinetics")
+        wavelength_entry = ctk.CTkEntry(
+            sidebar, textvariable=self.wavelength_var, height=btn_h
         )
-        wavelength_entry = ctk.CTkEntry(sidebar, textvariable=self.wavelength_var)
-        wavelength_entry.pack(fill="x", padx=10, pady=2)
+        wavelength_entry.pack(fill="x", padx=pad, pady=2)
         wavelength_entry.bind("<Return>", lambda _event: self.add_kinetics())
         self.wavelength_scale = ctk.CTkSlider(
             sidebar, from_=0, to=1, command=self._wavelength_scale_changed
         )
-        self.wavelength_scale.pack(fill="x", padx=10, pady=4)
-
-        ctk.CTkLabel(sidebar, text="Wavelength average (+/-)", anchor="w").pack(
-            fill="x", padx=10, pady=(2, 2)
-        )
+        self.wavelength_scale.pack(fill="x", padx=pad, pady=4)
+        kin_row = ctk.CTkFrame(sidebar, fg_color="transparent")
+        kin_row.pack(fill="x", padx=pad, pady=2)
+        kin_row.grid_columnconfigure(0, weight=1)
         ctk.CTkOptionMenu(
-            sidebar,
-            variable=self.wavelength_window_var,
-            values=list(WAVELENGTH_WINDOWS),
-            command=lambda _value: self._reaverage(MODE_KINETICS),
-        ).pack(fill="x", padx=10, pady=(0, 4))
-        ctk.CTkButton(
-            sidebar, text="Add Kinetics (at wavelength)", command=self.add_kinetics,
+            kin_row, variable=self.wavelength_window_var, values=list(WAVELENGTH_WINDOWS),
+            command=lambda _value: self._reaverage(MODE_KINETICS), height=btn_h,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        icon_btn(
+            kin_row, "\u2795", self.add_kinetics, "Add kinetics at this wavelength",
             fg_color=ACCENT, hover_color="#249b6b", text_color="#0d0d0d",
-        ).pack(fill="x", padx=10, pady=(0, 12))
+        ).grid(row=0, column=1)
 
         # --- Axis controls ---
-        ctk.CTkLabel(sidebar, text="Axis range (blank = auto)", anchor="w").pack(
-            fill="x", padx=10, pady=(6, 2)
-        )
+        section("Axis range (blank = auto)")
         self._build_axis_group(
             sidebar,
             "Spectrum axis",
@@ -473,66 +547,90 @@ class TAViewer(ctk.CTk):
             self.kin_y_max_var,
             "ns",
         )
-
-        ctk.CTkButton(
-            sidebar, text="Apply Axis Range", command=self.apply_axis_limits
-        ).pack(fill="x", padx=10, pady=(4, 4))
-        ctk.CTkButton(
-            sidebar,
-            text="Auto Y Axis",
-            command=self.auto_y_axis_limits,
-            fg_color="gray30",
-            hover_color="gray25",
-        ).pack(fill="x", padx=10, pady=(0, 4))
-        ctk.CTkButton(
-            sidebar,
-            text="Auto Axis Range",
-            command=self.auto_axis_limits,
-            fg_color="gray30",
-            hover_color="gray25",
-        ).pack(fill="x", padx=10, pady=(0, 12))
+        row = grid3()
+        icon_btn(
+            row, "\u2714", self.apply_axis_limits, "Apply axis range"
+        ).grid(row=0, column=0)
+        icon_btn(
+            row, "\u2195", self.auto_y_axis_limits, "Auto Y axis",
+            fg_color="gray30", hover_color="gray25",
+        ).grid(row=0, column=1)
+        icon_btn(
+            row, "\u2922", self.auto_axis_limits, "Auto X + Y range",
+            fg_color="gray30", hover_color="gray25",
+        ).grid(row=0, column=2)
 
         # --- Data transform (applies to both plots) ---
-        ctk.CTkLabel(sidebar, text="Data transform (both plots)", anchor="w").pack(
-            fill="x", padx=10, pady=(6, 2)
-        )
-        ctk.CTkButton(
-            sidebar, text="Flip Y (x -1)", command=self.flip_y_axis
-        ).pack(fill="x", padx=10, pady=(0, 6))
-        self.baseline_button = ctk.CTkButton(
-            sidebar,
-            text="Apply Baseline Correction",
-            command=self.toggle_baseline_correction,
+        section("Data transform (both plots)")
+        row = grid3()
+        icon_btn(
+            row, "\U0001F503", self.flip_y_axis, "Flip Y (\u00d7 -1)"
+        ).grid(row=0, column=0)
+        self.baseline_button = icon_btn(
+            row,
+            "\U0001F4C9",
+            self.toggle_baseline_correction,
+            "Apply baseline correction",
             fg_color=ACCENT,
             hover_color="#249b6b",
             text_color="#0d0d0d",
         )
-        self.baseline_button.pack(fill="x", padx=10, pady=(0, 12))
+        self.baseline_button.grid(row=0, column=1)
 
-        # --- Settings ---
-        ctk.CTkLabel(sidebar, text="Settings", anchor="w").pack(
-            fill="x", padx=10, pady=(6, 2)
+        # --- Time shift (non-baseline data only) ---
+        section("Time shift (non-baseline only)")
+        self.time_shift_label = ctk.CTkLabel(
+            sidebar, text="Shift: 0 ns", anchor="w", text_color=ACCENT
         )
-        ctk.CTkButton(
-            sidebar, text="Save JSON Settings", command=self.save_settings
-        ).pack(fill="x", padx=10, pady=(0, 4))
-        ctk.CTkButton(
-            sidebar,
-            text="Read JSON Settings",
-            command=self.read_settings,
-            fg_color="gray30",
-            hover_color="gray25",
-        ).pack(fill="x", padx=10, pady=(0, 12))
+        self.time_shift_label.pack(fill="x", padx=pad, pady=(0, 2))
 
-        # --- Save ---
-        ctk.CTkButton(
+        shift_step_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
+        shift_step_frame.pack(fill="x", padx=pad, pady=2)
+        shift_step_frame.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(shift_step_frame, text="Step (ns)", anchor="w").grid(
+            row=0, column=0, sticky="w", padx=(0, 6)
+        )
+        ctk.CTkEntry(
+            shift_step_frame, textvariable=self.time_shift_step_var, height=btn_h
+        ).grid(row=0, column=1, sticky="ew")
+
+        row = grid3()
+        self.time_shift_left_button = icon_btn(
+            row, "\u25c0", lambda: self._shift_time(-1), "Shift earlier (\u2212 step)"
+        )
+        self.time_shift_left_button.grid(row=0, column=0)
+        self.time_shift_reset_button = icon_btn(
+            row, "\u21bb", self.reset_time_shift, "Reset time shift",
+            fg_color="gray30", hover_color="gray25",
+        )
+        self.time_shift_reset_button.grid(row=0, column=1)
+        self.time_shift_right_button = icon_btn(
+            row, "\u25b6", lambda: self._shift_time(1), "Shift later (+ step)"
+        )
+        self.time_shift_right_button.grid(row=0, column=2)
+        ctk.CTkLabel(
             sidebar,
-            text="Save PNG + XLSX",
-            command=self.save_outputs,
-            fg_color=ACCENT,
-            hover_color="#249b6b",
-            text_color="#0d0d0d",
-        ).pack(fill="x", padx=10, pady=(0, 12))
+            text="Tip: click the plot, then use Left/Right arrows.",
+            anchor="w",
+            justify="left",
+            wraplength=wrap,
+            text_color="gray60",
+        ).pack(fill="x", padx=pad, pady=(0, 4))
+
+        # --- Settings + output ---
+        section("Settings & output")
+        row = grid3()
+        icon_btn(
+            row, "\U0001F4BE", self.save_settings, "Save JSON settings"
+        ).grid(row=0, column=0)
+        icon_btn(
+            row, "\U0001F4E5", self.read_settings, "Read JSON settings",
+            fg_color="gray30", hover_color="gray25",
+        ).grid(row=0, column=1)
+        icon_btn(
+            row, "\U0001F5BC", self.save_outputs, "Save PNG + XLSX",
+            fg_color=ACCENT, hover_color="#249b6b", text_color="#0d0d0d",
+        ).grid(row=0, column=2)
 
         # --- Status ---
         self.status_label = ctk.CTkLabel(
@@ -540,10 +638,10 @@ class TAViewer(ctk.CTk):
             textvariable=self.status_var,
             justify="left",
             anchor="w",
-            wraplength=280,
+            wraplength=wrap,
             text_color=ACCENT,
         )
-        self.status_label.pack(fill="x", padx=10, pady=(8, 12))
+        self.status_label.pack(fill="x", padx=pad, pady=(8, 8))
 
         # --- Plot area: two stacked subplots, spectra on top, kinetics below ---
         plot_frame = ctk.CTkFrame(self)
@@ -598,6 +696,11 @@ class TAViewer(ctk.CTk):
             pass
         self.toolbar.pack(fill="x", padx=10, pady=(4, 10))
 
+        self._set_time_shift_controls_enabled(self.data is not None)
+
+    def _add_tooltip(self, widget, text: str) -> _Tooltip:
+        return _Tooltip(widget, text)
+
     def _build_axis_group(
         self,
         parent,
@@ -608,34 +711,34 @@ class TAViewer(ctk.CTk):
         y_max_var: tk.StringVar,
         x_unit: str,
     ) -> None:
-        ctk.CTkLabel(parent, text=title, anchor="w").pack(
-            fill="x", padx=10, pady=(4, 2)
-        )
+        ctk.CTkLabel(
+            parent, text=title, anchor="w", text_color="gray70"
+        ).pack(fill="x", padx=8, pady=(2, 0))
         frame = ctk.CTkFrame(parent, fg_color="transparent")
-        frame.pack(fill="x", padx=10, pady=(0, 6))
-        frame.grid_columnconfigure((0, 1), weight=1)
+        frame.pack(fill="x", padx=8, pady=(0, 2))
+        frame.grid_columnconfigure((0, 1), weight=1, uniform="axis")
 
         ctk.CTkLabel(frame, text=f"X min ({x_unit})", anchor="w").grid(
-            row=0, column=0, sticky="ew", padx=(0, 4), pady=(0, 2)
+            row=0, column=0, sticky="ew", padx=(0, 3)
         )
         ctk.CTkLabel(frame, text=f"X max ({x_unit})", anchor="w").grid(
-            row=0, column=1, sticky="ew", padx=(4, 0), pady=(0, 2)
+            row=0, column=1, sticky="ew", padx=(3, 0)
         )
-        x_min_entry = ctk.CTkEntry(frame, textvariable=x_min_var)
-        x_max_entry = ctk.CTkEntry(frame, textvariable=x_max_var)
-        x_min_entry.grid(row=1, column=0, sticky="ew", padx=(0, 4), pady=(0, 6))
-        x_max_entry.grid(row=1, column=1, sticky="ew", padx=(4, 0), pady=(0, 6))
+        x_min_entry = ctk.CTkEntry(frame, textvariable=x_min_var, height=26)
+        x_max_entry = ctk.CTkEntry(frame, textvariable=x_max_var, height=26)
+        x_min_entry.grid(row=1, column=0, sticky="ew", padx=(0, 3), pady=(0, 3))
+        x_max_entry.grid(row=1, column=1, sticky="ew", padx=(3, 0), pady=(0, 3))
 
         ctk.CTkLabel(frame, text="Y min", anchor="w").grid(
-            row=2, column=0, sticky="ew", padx=(0, 4), pady=(0, 2)
+            row=2, column=0, sticky="ew", padx=(0, 3)
         )
         ctk.CTkLabel(frame, text="Y max", anchor="w").grid(
-            row=2, column=1, sticky="ew", padx=(4, 0), pady=(0, 2)
+            row=2, column=1, sticky="ew", padx=(3, 0)
         )
-        y_min_entry = ctk.CTkEntry(frame, textvariable=y_min_var)
-        y_max_entry = ctk.CTkEntry(frame, textvariable=y_max_var)
-        y_min_entry.grid(row=3, column=0, sticky="ew", padx=(0, 4), pady=(0, 6))
-        y_max_entry.grid(row=3, column=1, sticky="ew", padx=(4, 0), pady=(0, 6))
+        y_min_entry = ctk.CTkEntry(frame, textvariable=y_min_var, height=26)
+        y_max_entry = ctk.CTkEntry(frame, textvariable=y_max_var, height=26)
+        y_min_entry.grid(row=3, column=0, sticky="ew", padx=(0, 3))
+        y_max_entry.grid(row=3, column=1, sticky="ew", padx=(3, 0))
 
         for entry in (x_min_entry, x_max_entry, y_min_entry, y_max_entry):
             entry.bind("<Return>", lambda _event: self.apply_axis_limits())
@@ -683,9 +786,6 @@ class TAViewer(ctk.CTk):
         if selected:
             self.file_var.set(selected)
             self._load_file(Path(selected))
-
-    def _load_file_from_entry(self) -> None:
-        self._load_file(Path(self.file_var.get()))
 
     def _load_file(self, path: Path) -> None:
         try:
@@ -904,6 +1004,93 @@ class TAViewer(ctk.CTk):
         self.canvas.draw_idle()
         self.status_var.set("Flipped both plots along the y-axis (x -1).")
 
+    def _time_shift_step_ns(self) -> float | None:
+        raw_value = self.time_shift_step_var.get().strip()
+        try:
+            step = float(raw_value)
+        except ValueError:
+            messagebox.showerror(
+                "Invalid step", "Time shift step must be a positive number (ns)."
+            )
+            return None
+        if step <= 0:
+            messagebox.showerror(
+                "Invalid step", "Time shift step must be greater than zero."
+            )
+            return None
+        return step
+
+    def _shift_time(self, direction: int) -> None:
+        if self.data is None:
+            messagebox.showwarning("No data", "Please load a data file first.")
+            return
+        # Keep time-zero adjustments away from baseline-corrected data so the
+        # baseline column detection (which depends on the time axis) stays valid.
+        if self.data.baseline_corrected:
+            self.status_var.set(
+                "Time shift is disabled while baseline correction is applied. "
+                "Remove baseline correction first."
+            )
+            return
+        step = self._time_shift_step_ns()
+        if step is None:
+            return
+        self._apply_time_shift(self.data.time_shift_ns + direction * step)
+
+    def reset_time_shift(self) -> None:
+        if self.data is None:
+            messagebox.showwarning("No data", "Please load a data file first.")
+            return
+        if self.data.baseline_corrected:
+            self.status_var.set(
+                "Time shift is disabled while baseline correction is applied. "
+                "Remove baseline correction first."
+            )
+            return
+        if self.data.time_shift_ns == 0.0:
+            self.status_var.set("Time shift is already 0 ns.")
+            return
+        self._apply_time_shift(0.0)
+
+    def _apply_time_shift(self, new_shift_ns: float) -> None:
+        if self.data is None:
+            return
+        # Preserve the current zoom so fine time alignment is easy to eyeball.
+        saved_limits = {
+            ax: (ax.get_xlim(), ax.get_ylim()) for ax in self._all_axes()
+        }
+        self.data.set_time_shift(new_shift_ns)
+        self.time_scale.configure(
+            from_=self.data.min_time_ns, to=self.data.max_time_ns
+        )
+        self._refresh_all_curves()
+        for ax, (xlim, ylim) in saved_limits.items():
+            ax.set_xlim(xlim)
+            ax.set_ylim(ylim)
+        self.canvas.draw_idle()
+        self._update_time_shift_label()
+        self.status_var.set(
+            f"Applied time shift of {self.data.time_shift_ns:.6g} ns "
+            "(data time 0 moved to this physical time)."
+        )
+
+    def _update_time_shift_label(self) -> None:
+        if not hasattr(self, "time_shift_label"):
+            return
+        shift = self.data.time_shift_ns if self.data is not None else 0.0
+        self.time_shift_label.configure(text=f"Shift: {shift:.6g} ns")
+
+    def _set_time_shift_controls_enabled(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        for attr in (
+            "time_shift_left_button",
+            "time_shift_right_button",
+            "time_shift_reset_button",
+        ):
+            button = getattr(self, attr, None)
+            if button is not None:
+                button.configure(state=state)
+
     def toggle_baseline_correction(self) -> None:
         if self.data is None:
             messagebox.showwarning("No data", "Please load a data file first.")
@@ -947,21 +1134,27 @@ class TAViewer(ctk.CTk):
 
     def _update_baseline_state_ui(self) -> None:
         corrected = self.data.baseline_corrected if self.data is not None else False
+        self._set_time_shift_controls_enabled(self.data is not None and not corrected)
+        self._update_time_shift_label()
         if hasattr(self, "baseline_button"):
             if corrected:
                 self.baseline_button.configure(
-                    text="Remove Baseline Correction",
                     fg_color=BASELINE_NOTICE_COLOR,
                     hover_color="#cc7f00",
                     text_color="#0d0d0d",
                 )
+                tooltip = getattr(self.baseline_button, "_tooltip", None)
+                if tooltip is not None:
+                    tooltip.set_text("Remove baseline correction")
             else:
                 self.baseline_button.configure(
-                    text="Apply Baseline Correction",
                     fg_color=ACCENT,
                     hover_color="#249b6b",
                     text_color="#0d0d0d",
                 )
+                tooltip = getattr(self.baseline_button, "_tooltip", None)
+                if tooltip is not None:
+                    tooltip.set_text("Apply baseline correction")
         self._update_baseline_notice()
         if hasattr(self, "canvas"):
             self.canvas.draw_idle()
@@ -1065,6 +1258,10 @@ class TAViewer(ctk.CTk):
             "baseline_corrected": (
                 self.data.baseline_corrected if self.data is not None else False
             ),
+            "time_shift_ns": (
+                self.data.time_shift_ns if self.data is not None else 0.0
+            ),
+            "time_shift_step_ns": self.time_shift_step_var.get(),
             "y_sign": self.y_sign,
             "curves": self._current_curves(),
         }
@@ -1104,6 +1301,20 @@ class TAViewer(ctk.CTk):
             "wavelength_average",
             WAVELENGTH_WINDOWS,
         )
+
+        if "time_shift_step_ns" in settings:
+            self.time_shift_step_var.set(str(settings["time_shift_step_ns"]))
+        # Apply the shift before baseline correction: a saved baseline was
+        # computed on the already-shifted time axis, so restore that order.
+        if self.data is not None:
+            try:
+                saved_shift = float(settings.get("time_shift_ns", 0.0))
+            except (TypeError, ValueError):
+                saved_shift = 0.0
+            self.data.set_time_shift(saved_shift)
+            self.time_scale.configure(
+                from_=self.data.min_time_ns, to=self.data.max_time_ns
+            )
 
         if settings.get("baseline_corrected") and self.data is not None:
             try:
@@ -1775,7 +1986,17 @@ class TAViewer(ctk.CTk):
 
     def _on_canvas_key_press(self, event) -> None:
         key = (event.key or "").lower()
-        if key != "d" or self._toolbar_is_active():
+        if self._toolbar_is_active():
+            return
+
+        if key == "left":
+            self._shift_time(-1)
+            return
+        if key == "right":
+            self._shift_time(1)
+            return
+
+        if key != "d":
             return
 
         if self.plot_selected_curve is None:
