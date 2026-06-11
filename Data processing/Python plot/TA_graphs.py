@@ -54,10 +54,11 @@ STYLE_SCATTER = "Scatter line"
 LINE_STYLE_OPTIONS = (STYLE_SOLID, STYLE_SCATTER)
 SPECTRA_LEGEND_TITLE = "Time (ns)"
 KINETICS_LEGEND_TITLE = "Wavelength (nm)"
-SPECTRA_COLORBAR_DEFAULT_X = 0.88
+SPECTRA_COLORBAR_DEFAULT_X = 0.1
 SPECTRA_COLORBAR_DEFAULT_Y = 0.58
-SPECTRA_COLORBAR_DEFAULT_WIDTH = 0.035
-SPECTRA_COLORBAR_DEFAULT_HEIGHT = 0.34
+SPECTRA_COLORBAR_DEFAULT_WIDTH = 0.8
+SPECTRA_COLORBAR_DEFAULT_HEIGHT = 0.035
+SPECTRA_COLORBAR_TICK_FONT_SIZE = GLOBAL_FONT_SIZE - 2
 
 
 @dataclass
@@ -324,7 +325,7 @@ def _label_time_midpoint(label: str) -> float | None:
 
 
 def _format_colorbar_tick(value: float) -> str:
-    return f"{value:.5g}"
+    return f"{value:.1f}"
 
 
 def _float_text_param(config, key: str, default: float, *, min_value=None, max_value=None) -> float:
@@ -384,16 +385,21 @@ def _spectra_colorbar_box(config) -> tuple[float, float, float, float]:
         config,
         "spectra_colorbar_width",
         SPECTRA_COLORBAR_DEFAULT_WIDTH,
-        min_value=0.01,
-        max_value=0.2,
+        min_value=0.05,
+        max_value=1.0,
     )
     height = _float_text_param(
         config,
         "spectra_colorbar_height",
         SPECTRA_COLORBAR_DEFAULT_HEIGHT,
-        min_value=0.05,
-        max_value=1.0,
+        min_value=0.01,
+        max_value=0.2,
     )
+    # Legacy configs saved vertical bar dimensions (narrow width, tall height).
+    if height > width:
+        width, height = height, width
+    if x + width > 1.0:
+        x = max(0.0, 1.0 - width)
     return x, y, width, height
 
 
@@ -439,16 +445,25 @@ def _add_plotly_spectra_colorbar(
                 showscale=True,
                 size=0,
                 colorbar=dict(
-                    title=dict(text=_spectra_colorbar_title(config), side="right"),
-                    x=x,
-                    y=y + height / 2,
-                    xanchor="left",
-                    yanchor="middle",
+                    title=dict(
+                        text=_spectra_colorbar_title(config),
+                        side="top",
+                        font=dict(size=GLOBAL_FONT_SIZE),
+                    ),
+                    orientation="h",
+                    x=x + width / 2,
+                    y=y,
+                    xanchor="center",
+                    yanchor="bottom",
                     tickmode="array",
                     tickvals=tick_values,
                     ticktext=tick_labels,
-                    len=height,
-                    thickness=max(6, int(width * MATPLOTLIB_EXPORT_WIDTH_PX)),
+                    tickangle=0,
+                    len=width,
+                    lenmode="fraction",
+                    thickness=max(6, int(height * MATPLOTLIB_EXPORT_HEIGHT_PX)),
+                    thicknessmode="pixels",
+                    tickfont=dict(size=SPECTRA_COLORBAR_TICK_FONT_SIZE),
                 ),
             ),
         )
@@ -734,11 +749,21 @@ def _add_mpl_spectra_colorbar(fig, ax, colors, tick_values, tick_labels, config)
     norm = mpl.colors.BoundaryNorm(boundaries, cmap.N)
     sm = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
-    cbar = fig.colorbar(sm, cax=cax, ticks=tick_values, orientation="vertical")
-    cbar.set_label(_spectra_colorbar_title(config))
-    cbar.ax.yaxis.set_label_position("right")
-    cbar.ax.set_yticklabels(tick_labels)
-    cbar.ax.tick_params(direction="out", width=MATPLOTLIB_EXPORT_TICK_WIDTH, pad=2)
+    cbar = fig.colorbar(sm, cax=cax, ticks=tick_values, orientation="horizontal")
+    cbar.set_label(_spectra_colorbar_title(config), fontsize=GLOBAL_FONT_SIZE)
+    cbar.ax.set_xticks(tick_values)
+    cbar.ax.set_xticklabels(tick_labels, fontsize=SPECTRA_COLORBAR_TICK_FONT_SIZE, rotation=0, ha="center")
+    cbar.ax.tick_params(
+        axis="x",
+        direction="out",
+        width=MATPLOTLIB_EXPORT_TICK_WIDTH,
+        pad=2,
+        labelsize=SPECTRA_COLORBAR_TICK_FONT_SIZE,
+        labelrotation=0,
+    )
+    cbar.ax.set_yticks([])
+    cbar.ax.xaxis.set_label_position("top")
+    cbar.ax.xaxis.label.set_rotation(0)
     cbar.outline.set_linewidth(MATPLOTLIB_EXPORT_AXES_LINEWIDTH)
 
 
