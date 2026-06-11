@@ -14,7 +14,9 @@ import concurrent.futures
 It groups files by subfolder. For TRPL data, it finds the curve with the latest 
 rising edge (peak) as a reference, aligns all other TRPL curves to it, 
 subtracts the background baseline, and prevents negative time/counts. 
-Finally, it generates plots of the RAW data for previewing shapes.'''
+Finally, it generates plots of the RAW data for previewing shapes.
+
+It's NOT for jounalr article, it's for previewing the data.'''
 
 # Enable High DPI awareness on Windows
 try:

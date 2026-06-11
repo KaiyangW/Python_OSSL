@@ -1953,14 +1953,24 @@ class TAViewer(ctk.CTk):
                 if legend is not None:
                     legend.remove()
                 continue
+            legend_kwargs = {
+                "loc": "best",
+                "fontsize": self.secondary_font_size,
+                "facecolor": DARK_BG,
+                "edgecolor": "white",
+                "labelcolor": "white",
+            }
+            if ax is self.ax_spec:
+                legend_kwargs.update(
+                    {
+                        "bbox_to_anchor": (0.5, 0.0, 0.5, 1.0),
+                        "bbox_transform": ax.transAxes,
+                    }
+                )
             ax.legend(
                 lines,
                 [line.get_label() for line in lines],
-                loc="best",
-                fontsize=self.secondary_font_size,
-                facecolor=DARK_BG,
-                edgecolor="white",
-                labelcolor="white",
+                **legend_kwargs,
             )
 
     # ------------------------------------------------------------------
