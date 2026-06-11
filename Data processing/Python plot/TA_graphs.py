@@ -7,7 +7,6 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import plotly.graph_objects as go
@@ -36,7 +35,6 @@ from PlotUtils import (
     MATPLOTLIB_EXPORT_MARGIN_LEFT_PX,
     MATPLOTLIB_EXPORT_MARGIN_RIGHT_PX,
     MATPLOTLIB_EXPORT_MARGIN_TOP_PX,
-    MATPLOTLIB_EXPORT_TICK_WIDTH,
     MATPLOTLIB_EXPORT_WIDTH_PX,
     SPECTRA_COLOR_PALETTES,
     apply_matplotlib_export_axes_style,
@@ -48,18 +46,17 @@ from PlotUtils import (
 
 Y_LABEL = "ΔT/T"
 CONFIG_NAME = "ta_graph_config.json"
-EXPORT_STEM = "TA_Spectra_Kinetics"
+EXPORT_STEM = "TA"
 STYLE_SOLID = "Solid line"
 STYLE_SCATTER = "Scatter line"
 LINE_STYLE_OPTIONS = (STYLE_SOLID, STYLE_SCATTER)
 SPECTRA_LEGEND_TITLE = "Time (ns)"
 KINETICS_LEGEND_TITLE = "Wavelength (nm)"
-SPECTRA_COLORBAR_DEFAULT_X = 0.1
-SPECTRA_COLORBAR_DEFAULT_Y = 0.58
-SPECTRA_COLORBAR_DEFAULT_WIDTH = 0.8
-SPECTRA_COLORBAR_DEFAULT_HEIGHT = 0.035
-SPECTRA_COLORBAR_TICK_FONT_SIZE = GLOBAL_FONT_SIZE - 2
-SPECTRA_COLORBAR_TITLE_GAP_PX = 15
+SPECTRA_LEGEND_FONT_SIZE = GLOBAL_FONT_SIZE - 2
+PLOTLY_AXIS_LINEWIDTH = 1.5
+DEFAULT_SPECTRA_PALETTE = "viridis"
+DEFAULT_KINETICS_PALETTE = "viridis"
+KINETICS_PALETTE_OPTIONS = tuple(SPECTRA_COLOR_PALETTES.keys())
 
 
 @dataclass
@@ -67,6 +64,7 @@ class Curve:
     label: str
     x: np.ndarray
     y: np.ndarray
+    time_value_ns: float | None = None
 
 
 @dataclass
@@ -190,6 +188,8 @@ def _load_from_workbook(path: Path) -> TAPlotData:
     spectra, spectra_x_label, spectra_y_label = _parse_xy_sheet(
         spectra_df, spectra_x_label, Y_LABEL
     )
+    for curve in spectra:
+        curve.time_value_ns = _parse_time_ns_from_label(curve.label)
     kinetics, kinetics_x_label, kinetics_y_label = _parse_xy_sheet(
         kinetics_df, kinetics_x_label, Y_LABEL
     )
@@ -220,6 +220,33 @@ def _format_number(value: float, unit: str) -> str:
     return f"{value:.6g} {unit}"
 
 
+def _parse_time_ns_from_label(label: str) -> float | None:
+    text = _clean_label(label)
+    if len(text) > 2 and text[0].upper() in {"S", "K"} and text[1].isdigit():
+        _, sep, rest = text.partition(":")
+        if sep and rest.strip():
+            text = rest.strip()
+    match = re.search(r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?', text)
+    if not match:
+        return None
+    try:
+        value = float(match.group(0))
+    except (ValueError, OverflowError):
+        return None
+    if not np.isfinite(value) or value < 0:
+        return None
+    after_number = text[match.end():].strip().lower()
+    if after_number.startswith('us') or after_number.startswith('\xb5s'):
+        value *= 1000
+    return value
+
+
+def _format_time_ns(value_ns: float, unit: str) -> str:
+    if unit == "us":
+        return f"{value_ns / 1000:.6g}"
+    return f"{value_ns:.6g}"
+
+
 def _load_from_grid(path: Path) -> TAPlotData:
     grid = read_grid(path, layout="ta_grid")
     wavelengths = np.asarray(grid.row_values, dtype=float)
@@ -227,7 +254,7 @@ def _load_from_grid(path: Path) -> TAPlotData:
     signal = np.asarray(grid.data, dtype=float)
 
     spectra = [
-        Curve(f"S: {_format_number(times_ns[idx], 'ns')}", wavelengths, signal[:, idx])
+        Curve(f"S: {_format_number(times_ns[idx], 'ns')}", wavelengths, signal[:, idx], time_value_ns=times_ns[idx])
         for idx in _representative_indices(times_ns.size)
     ]
     kinetics = [
@@ -290,10 +317,23 @@ def _text_param(config, key: str, default: str = "") -> str:
     return text if text else default
 
 
-def _legend_label(config, group: str, curve_idx: int, default: str) -> str:
-    return _default_legend_text(
-        _text_param(config, f"{group}_legend_label_{curve_idx}", _default_legend_text(default))
-    )
+def _legend_label(config, group: str, curve_idx: int, default: str,
+                  *, time_unit: str = "ns", time_value_ns: float | None = None) -> str:
+    if group != "spectra":
+        return _default_legend_text(
+            _text_param(config, f"kinetics_legend_label_{curve_idx}", _default_legend_text(default))
+        )
+
+    if time_value_ns is not None:
+        clean = _default_legend_text(default)
+        if len(re.findall(r'\d+(?:\.\d+)?', clean)) <= 1:
+            return _format_spectra_legend_text(default, time_unit=time_unit, time_value_ns=time_value_ns)
+
+    current_default = _format_spectra_legend_text(default, time_unit=time_unit)
+    label = _text_param(config, f"spectra_legend_label_{curve_idx}", current_default)
+    if label.strip() == current_default.strip():
+        return current_default
+    return _format_spectra_legend_text(label, time_unit=time_unit)
 
 
 def _legend_title(config, group: str, default: str) -> str:
@@ -302,6 +342,10 @@ def _legend_title(config, group: str, default: str) -> str:
         return default
     if group == "kinetics" and title == "Kinetics":
         return default
+    if group == "spectra":
+        time_unit = _text_param(config, "time_unit", "ns")
+        if title in (f"Time (ns)", f"Time (us)") and title != f"Time ({time_unit})":
+            return default
     return title
 
 
@@ -311,186 +355,36 @@ def _default_legend_text(label: str) -> str:
         _, sep, rest = text.partition(":")
         if sep and rest.strip():
             text = rest.strip()
-    return re.sub(r"\s*(?:ns|nm)\s*$", "", text, flags=re.IGNORECASE).strip()
+    return re.sub(r"\s*(?:ns|nm|us|µs)\s*$", "", text, flags=re.IGNORECASE).strip()
 
 
-def _label_time_midpoint(label: str) -> float | None:
+def _format_spectra_legend_text(label: str, *, time_unit: str = "ns", time_value_ns: float | None = None) -> str:
+    if time_unit == "us":
+        fmt = ".2f"
+    else:
+        fmt = ".1f"
+
+    if time_value_ns is not None:
+        if time_unit == "us":
+            return f"{time_value_ns / 1000:{fmt}}"
+        return f"{time_value_ns:{fmt}}"
+
     text = _default_legend_text(label)
-    values = re.findall(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?", text)
-    if not values:
-        return None
-    numbers = [float(value) for value in values]
-    if len(numbers) >= 2:
-        return float(np.mean(numbers[:2]))
-    return numbers[0]
+    text = re.sub(r"\b(?:ns|us|µs)\b", "", text, flags=re.IGNORECASE)
 
+    def _fmt_number(match: re.Match) -> str:
+        value = float(match.group(0))
+        if time_unit == "us":
+            value /= 1000
+        return f"{value:{fmt}}"
 
-def _format_colorbar_tick(value: float) -> str:
-    return f"{value:.1f}"
-
-
-def _float_text_param(config, key: str, default: float, *, min_value=None, max_value=None) -> float:
-    try:
-        value = float(_text_param(config, key, str(default)))
-    except (TypeError, ValueError):
-        value = default
-    if min_value is not None:
-        value = max(min_value, value)
-    if max_value is not None:
-        value = min(max_value, value)
-    return value
-
-
-def _spectra_colorbar_title(config) -> str:
-    title = _text_param(config, "spectra_colorbar_title", "")
-    if title:
-        return title
-    return _legend_title(config, "spectra", SPECTRA_LEGEND_TITLE)
-
-
-def _split_custom_tick_labels(text: str) -> list[str]:
-    return [label.strip() for label in re.split(r"[,;\n]+", text or "") if label.strip()]
-
-
-def _auto_colorbar_tick_labels(curves: list[Curve], selected: list[int]) -> list[str]:
-    labels: list[str] = []
-    for curve_idx in selected:
-        curve = curves[curve_idx]
-        midpoint = _label_time_midpoint(curve.label)
-        if midpoint is None:
-            labels.append(re.sub(r"\bns\b", "", _default_legend_text(curve.label), flags=re.IGNORECASE).strip())
-        else:
-            labels.append(_format_colorbar_tick(midpoint))
-    return labels
-
-
-def _spectra_colorbar_ticks(
-    curves: list[Curve], selected: list[int], config
-) -> tuple[list[float], list[str]]:
-    custom_labels = _split_custom_tick_labels(_text_param(config, "spectra_colorbar_ticks", ""))
-    if custom_labels:
-        if len(custom_labels) == 1:
-            return [0.0], custom_labels
-        return np.linspace(0, len(selected) - 1, len(custom_labels)).tolist(), custom_labels
-    return list(range(len(selected))), _auto_colorbar_tick_labels(curves, selected)
-
-
-def _spectra_colorbar_box(config) -> tuple[float, float, float, float]:
-    x = _float_text_param(
-        config, "spectra_colorbar_x", SPECTRA_COLORBAR_DEFAULT_X, min_value=0.0, max_value=1.0
+    text = re.sub(
+        r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?",
+        _fmt_number,
+        text,
     )
-    y = _float_text_param(
-        config, "spectra_colorbar_y", SPECTRA_COLORBAR_DEFAULT_Y, min_value=0.0, max_value=1.0
-    )
-    width = _float_text_param(
-        config,
-        "spectra_colorbar_width",
-        SPECTRA_COLORBAR_DEFAULT_WIDTH,
-        min_value=0.05,
-        max_value=1.0,
-    )
-    height = _float_text_param(
-        config,
-        "spectra_colorbar_height",
-        SPECTRA_COLORBAR_DEFAULT_HEIGHT,
-        min_value=0.01,
-        max_value=0.2,
-    )
-    # Legacy configs saved vertical bar dimensions (narrow width, tall height).
-    if height > width:
-        width, height = height, width
-    if x + width > 1.0:
-        x = max(0.0, 1.0 - width)
-    return x, y, width, height
-
-
-def _plotly_discrete_colorscale(colors: list) -> list[list]:
-    if not colors:
-        return []
-    if len(colors) == 1:
-        return [[0.0, colors[0]], [1.0, colors[0]]]
-
-    colorscale: list[list] = []
-    for idx, color in enumerate(colors):
-        start = idx / len(colors)
-        end = (idx + 1) / len(colors)
-        colorscale.append([start, color])
-        colorscale.append([end, color])
-    colorscale[-1][0] = 1.0
-    return colorscale
-
-
-def _plotly_spectra_colorbar_title_y(y: float, height: float) -> float:
-    thickness_px = max(6, int(height * MATPLOTLIB_EXPORT_HEIGHT_PX))
-    tick_area_px = SPECTRA_COLORBAR_TICK_FONT_SIZE + 8
-    bar_top_frac = y + (tick_area_px + thickness_px) / MATPLOTLIB_EXPORT_HEIGHT_PX
-    return bar_top_frac + SPECTRA_COLORBAR_TITLE_GAP_PX / MATPLOTLIB_EXPORT_HEIGHT_PX
-
-
-def _add_plotly_spectra_colorbar_title(
-    fig: go.Figure, config, x: float, y: float, width: float, height: float
-) -> None:
-    title = _spectra_colorbar_title(config)
-    if not title:
-        return
-    fig.add_annotation(
-        text=title,
-        xref="paper",
-        yref="paper",
-        x=x + width / 2,
-        y=_plotly_spectra_colorbar_title_y(y, height),
-        xanchor="center",
-        yanchor="bottom",
-        showarrow=False,
-        font=dict(size=GLOBAL_FONT_SIZE, color="black"),
-    )
-
-
-def _add_plotly_spectra_colorbar(
-    fig: go.Figure,
-    colors: list,
-    tick_values: list[float],
-    tick_labels: list[str],
-    config,
-) -> None:
-    if not colors:
-        return
-    x, y, width, height = _spectra_colorbar_box(config)
-    color_indices = list(range(len(colors)))
-    fig.add_trace(
-        go.Scatter(
-            x=[None] * len(colors),
-            y=[None] * len(colors),
-            mode="markers",
-            hoverinfo="skip",
-            showlegend=False,
-            marker=dict(
-                color=color_indices,
-                cmin=-0.5,
-                cmax=len(colors) - 0.5,
-                colorscale=_plotly_discrete_colorscale(colors),
-                showscale=True,
-                size=0,
-                colorbar=dict(
-                    orientation="h",
-                    x=x + width / 2,
-                    y=y,
-                    xanchor="center",
-                    yanchor="bottom",
-                    tickmode="array",
-                    tickvals=tick_values,
-                    ticktext=tick_labels,
-                    tickangle=0,
-                    len=width,
-                    lenmode="fraction",
-                    thickness=max(6, int(height * MATPLOTLIB_EXPORT_HEIGHT_PX)),
-                    thicknessmode="pixels",
-                    tickfont=dict(size=SPECTRA_COLORBAR_TICK_FONT_SIZE),
-                ),
-            ),
-        )
-    )
-    _add_plotly_spectra_colorbar_title(fig, config, x, y, width, height)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip(" -")
 
 
 def _add_legend_title_param(
@@ -505,20 +399,16 @@ def _add_legend_title_param(
 
 def _add_legend_text_param(explorer, group: str, idx: int, curve: Curve, label_prefix: str) -> None:
     key = f"{group}_legend_label_{idx}"
-    default_text = _default_legend_text(curve.label)
+    time_unit = (explorer.config.get("text_params") or {}).get("time_unit", "ns")
+    default_text = (
+        _format_spectra_legend_text(curve.label, time_unit=time_unit, time_value_ns=curve.time_value_ns)
+        if group == "spectra"
+        else _default_legend_text(curve.label)
+    )
     existing = explorer.config.get("text_params", {}).get(key)
     explorer.add_text_param(f"{label_prefix}{idx + 1} legend", key, default_text)
-    if existing in (None, "", curve.label):
+    if existing in (None, "", curve.label, _default_legend_text(curve.label)):
         explorer.config["text_params"][key] = default_text
-
-
-def _add_spectra_colorbar_params(explorer) -> None:
-    explorer.add_text_param("S cbar title", "spectra_colorbar_title", SPECTRA_LEGEND_TITLE)
-    explorer.add_text_param("S cbar ticks", "spectra_colorbar_ticks", "")
-    explorer.add_text_param("S cbar x", "spectra_colorbar_x", str(SPECTRA_COLORBAR_DEFAULT_X))
-    explorer.add_text_param("S cbar y", "spectra_colorbar_y", str(SPECTRA_COLORBAR_DEFAULT_Y))
-    explorer.add_text_param("S cbar width", "spectra_colorbar_width", str(SPECTRA_COLORBAR_DEFAULT_WIDTH))
-    explorer.add_text_param("S cbar height", "spectra_colorbar_height", str(SPECTRA_COLORBAR_DEFAULT_HEIGHT))
 
 
 def _auto_y_exponent(curves: list[Curve], selected: list[int]) -> int:
@@ -596,17 +486,26 @@ def _plotly_axis(title: str, axis_range=None) -> dict:
     axis = dict(
         title=title,
         showline=True,
-        linewidth=1.5,
+        linewidth=PLOTLY_AXIS_LINEWIDTH,
         linecolor="black",
         mirror=True,
         ticks="inside",
-        tickwidth=1.5,
+        tickwidth=PLOTLY_AXIS_LINEWIDTH,
         tickcolor="black",
         ticklen=8,
     )
     if axis_range and axis_range[0] is not None:
         axis["range"] = axis_range
     return axis
+
+
+def _add_plotly_zero_line(fig: go.Figure) -> None:
+    fig.add_hline(
+        y=0.0,
+        line_color="red",
+        line_width=PLOTLY_AXIS_LINEWIDTH,
+        line_dash="3px,3px",
+    )
 
 
 def _plotly_spectra_axis(title: str, axis_range=None, *, yaxis: bool = False) -> dict:
@@ -633,6 +532,7 @@ def _add_plotly_curves(
     showlegend: bool = True,
 ) -> None:
     mode = _trace_mode(style_name)
+    time_unit = _text_param(config, "time_unit", "ns")
     for color_idx, curve_idx in enumerate(selected):
         curve = curves[curve_idx]
         fig.add_trace(
@@ -640,7 +540,9 @@ def _add_plotly_curves(
                 x=curve.x,
                 y=_scaled_y(curve.y, exponent),
                 mode=mode,
-                name=_legend_label(config, group, curve_idx, curve.label),
+                name=_legend_label(config, group, curve_idx, curve.label,
+                                   time_unit=time_unit,
+                                   time_value_ns=curve.time_value_ns if group == "spectra" else None),
                 showlegend=showlegend,
                 line=dict(color=colors[color_idx], width=width, dash="solid"),
                 marker=dict(color=colors[color_idx], size=7),
@@ -664,7 +566,7 @@ def build_plotly_spectra(data_list, config):
         )
     else:
         colors = sample_spectra_palette(
-            config.get("spectra_palette", "viridis"), len(selected), as_rgba=True
+            config.get("spectra_palette", DEFAULT_SPECTRA_PALETTE), len(selected), as_rgba=True
         )
         _add_plotly_curves(
             fig,
@@ -676,14 +578,9 @@ def build_plotly_spectra(data_list, config):
             exponent,
             config,
             "spectra",
-            showlegend=False,
+            showlegend=True,
         )
-        _add_plotly_spectra_colorbar(
-            fig,
-            colors,
-            *_spectra_colorbar_ticks(data.spectra, selected, config),
-            config,
-        )
+        _add_plotly_zero_line(fig)
 
     fig.update_layout(
         font=dict(family="Arial", size=GLOBAL_FONT_SIZE, color="black"),
@@ -695,8 +592,21 @@ def build_plotly_spectra(data_list, config):
         ),
         plot_bgcolor="white",
         paper_bgcolor="white",
-        showlegend=False,
+        showlegend=True,
         margin=dict(l=90, r=40, t=40, b=90),
+        legend=dict(
+            title=dict(
+                text=_legend_title(config, "spectra", f"Time ({_text_param(config, 'time_unit', 'ns')})"),
+                font=dict(size=SPECTRA_LEGEND_FONT_SIZE),
+            ),
+            font=dict(size=SPECTRA_LEGEND_FONT_SIZE),
+            x=config.get("legend_pos", {}).get("x", 0.97),
+            y=config.get("legend_pos", {}).get("y", 0.97),
+            xanchor="right",
+            yanchor="top",
+            bgcolor="rgba(255,255,255,0.8)",
+            borderwidth=0,
+        ),
     )
     return fig
 
@@ -716,7 +626,10 @@ def build_plotly_kinetics(data_list, config):
             showarrow=False,
         )
     else:
-        colors = [config.get("colors", {}).get("kinetics", "#000000")] * len(selected)
+        kinetics_palette_id = _text_param(
+            config, "kinetics_palette", DEFAULT_KINETICS_PALETTE
+        )
+        colors = sample_spectra_palette(kinetics_palette_id, len(selected), as_rgba=True)
         _add_plotly_curves(
             fig,
             data.kinetics,
@@ -728,6 +641,7 @@ def build_plotly_kinetics(data_list, config):
             config,
             "kinetics",
         )
+        _add_plotly_zero_line(fig)
 
     fig.update_layout(
         font=dict(family="Arial", size=GLOBAL_FONT_SIZE, color="black"),
@@ -756,6 +670,7 @@ def build_plotly_kinetics(data_list, config):
 def _plot_mpl_curves(ax, curves, selected, colors, width, style_name, exponent, config, group):
     marker = "o" if style_name == STYLE_SCATTER else None
     markersize = max(3.5, width * 2.5) if marker else 0
+    time_unit = _text_param(config, "time_unit", "ns")
     for color_idx, curve_idx in enumerate(selected):
         curve = curves[curve_idx]
         ax.plot(
@@ -766,51 +681,19 @@ def _plot_mpl_curves(ax, curves, selected, colors, width, style_name, exponent, 
             linestyle="-",
             marker=marker,
             markersize=markersize,
-            label=_legend_label(config, group, curve_idx, curve.label),
+            label=_legend_label(config, group, curve_idx, curve.label,
+                                time_unit=time_unit,
+                                time_value_ns=curve.time_value_ns if group == "spectra" else None),
         )
 
 
-def _plotly_colorbar_box_to_mpl_axes(ax, x: float, y: float, width: float, height: float):
-    plot_box = ax.get_position()
-    mpl_width = width * plot_box.width
-    mpl_x = x + (width / 2) - (mpl_width / 2)
-    mpl_height = max(6, int(height * MATPLOTLIB_EXPORT_HEIGHT_PX)) / MATPLOTLIB_EXPORT_HEIGHT_PX
-    return mpl_x, y, mpl_width, mpl_height
-
-
-def _add_mpl_spectra_colorbar(fig, ax, colors, tick_values, tick_labels, config):
-    if not colors:
-        return
-    x, y, width, height = _spectra_colorbar_box(config)
-    cax = fig.add_axes(_plotly_colorbar_box_to_mpl_axes(ax, x, y, width, height))
-    cmap = mpl.colors.ListedColormap(colors)
-    boundaries = np.arange(len(colors) + 1) - 0.5
-    norm = mpl.colors.BoundaryNorm(boundaries, cmap.N)
-    sm = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
-    sm.set_array([])
-    cbar = fig.colorbar(sm, cax=cax, ticks=tick_values, orientation="horizontal")
-    cbar.set_label(
-        _spectra_colorbar_title(config),
-        fontsize=GLOBAL_FONT_SIZE,
-        labelpad=SPECTRA_COLORBAR_TITLE_GAP_PX,
+def _add_mpl_zero_line(ax) -> None:
+    ax.axhline(
+        y=0.0,
+        color="red",
+        linewidth=MATPLOTLIB_EXPORT_AXES_LINEWIDTH,
+        linestyle=(0, (3, 3)),
     )
-    cbar.ax.set_xticks(tick_values)
-    cbar.ax.set_xticklabels(tick_labels, fontsize=SPECTRA_COLORBAR_TICK_FONT_SIZE, rotation=0, ha="center")
-    cbar.ax.tick_params(
-        axis="x",
-        direction="out",
-        width=MATPLOTLIB_EXPORT_TICK_WIDTH,
-        pad=2,
-        labelsize=SPECTRA_COLORBAR_TICK_FONT_SIZE,
-        labelrotation=0,
-    )
-    cbar.ax.set_yticks([])
-    cbar.ax.xaxis.set_label_position("top")
-    cbar.ax.xaxis.label.set_rotation(0)
-    title_gap_frac = SPECTRA_COLORBAR_TITLE_GAP_PX / MATPLOTLIB_EXPORT_HEIGHT_PX
-    cbar.ax.xaxis.set_label_coords(0, 1.05 + title_gap_frac * 4)
-    cbar.ax.xaxis.label.set_horizontalalignment("left")
-    cbar.outline.set_linewidth(MATPLOTLIB_EXPORT_AXES_LINEWIDTH)
 
 
 def _make_figure() -> tuple[plt.Figure, plt.Axes]:
@@ -850,9 +733,10 @@ def plot_matplotlib_static(data_list, config, save_dir):
 
     setup_matplotlib_style()
 
-    palette_id = config.get("spectra_palette", "viridis")
+    palette_id = config.get("spectra_palette", DEFAULT_SPECTRA_PALETTE)
+    kinetics_palette_id = _text_param(config, "kinetics_palette", DEFAULT_KINETICS_PALETTE)
     spectra_colors = sample_spectra_palette(palette_id, len(spectra_selected))
-    kinetics_colors = [config.get("colors", {}).get("kinetics", "#000000")] * len(kinetics_selected)
+    kinetics_colors = sample_spectra_palette(kinetics_palette_id, len(kinetics_selected))
 
     # --- Spectra figure ---
     fig_spec, ax_spec = _make_figure()
@@ -862,10 +746,7 @@ def plot_matplotlib_static(data_list, config, save_dir):
         config["text_params"].get("spectra_style", STYLE_SOLID),
         spectra_exponent, config, "spectra",
     )
-    _add_mpl_spectra_colorbar(
-        fig_spec, ax_spec, spectra_colors,
-        *_spectra_colorbar_ticks(data.spectra, spectra_selected, config), config,
-    )
+    _add_mpl_zero_line(ax_spec)
     ax_spec.tick_params(top=False, right=False, labeltop=False, labelright=False)
     ax_spec.set_xlabel(data.spectra_x_label)
     ax_spec.set_ylabel(_y_axis_title(data.spectra_y_label, spectra_exponent, for_mpl=True))
@@ -876,6 +757,14 @@ def plot_matplotlib_static(data_list, config, save_dir):
     )
     if spec_yrange:
         ax_spec.set_ylim(*spec_yrange)
+    if ax_spec.get_legend_handles_labels()[0]:
+        ax_spec.legend(
+            loc="best",
+            frameon=False,
+            title=_legend_title(config, "spectra", f"Time ({_text_param(config, 'time_unit', 'ns')})"),
+            fontsize=SPECTRA_LEGEND_FONT_SIZE,
+            title_fontsize=SPECTRA_LEGEND_FONT_SIZE,
+        )
     _save_figure(fig_spec, os.path.join(save_dir, f"{EXPORT_STEM}_Spectra.pdf"))
 
     # --- Kinetics figure ---
@@ -886,6 +775,7 @@ def plot_matplotlib_static(data_list, config, save_dir):
         config["text_params"].get("kinetics_style", STYLE_SCATTER),
         kinetics_exponent, config, "kinetics",
     )
+    _add_mpl_zero_line(ax_kin)
     ax_kin.tick_params(top=False, right=False, labeltop=False, labelright=False)
     ax_kin.set_xlabel(data.kinetics_x_label)
     ax_kin.set_ylabel(_y_axis_title(data.kinetics_y_label, kinetics_exponent, for_mpl=True))
@@ -939,7 +829,10 @@ def main():
     )
     explorer.add_curve_style("Spectra line", "spectra", "#000000", default_width=1.8)
     explorer.add_curve_style("Kinetics line", "kinetics", "#000000", default_width=1.5)
-    explorer.add_spectra_palette_selector(SPECTRA_COLOR_PALETTES, default="viridis")
+    explorer.add_spectra_palette_selector(SPECTRA_COLOR_PALETTES, default=DEFAULT_SPECTRA_PALETTE)
+    explorer.add_choice_param(
+        "K palette", "kinetics_palette", KINETICS_PALETTE_OPTIONS, DEFAULT_KINETICS_PALETTE
+    )
     explorer.add_spectra_selection(
         _selection_options(data.spectra),
         _default_indices(data.spectra),
@@ -952,10 +845,16 @@ def main():
     )
     explorer.add_choice_param("Spectra style", "spectra_style", LINE_STYLE_OPTIONS, STYLE_SOLID)
     explorer.add_choice_param("Kinetics style", "kinetics_style", LINE_STYLE_OPTIONS, STYLE_SCATTER)
-    _add_spectra_colorbar_params(explorer)
+    explorer.add_choice_param("Time unit", "time_unit", ("ns", "us"), "ns")
+    _add_legend_title_param(
+        explorer, "spectra", "S legend title",
+        f"Time ({((explorer.config or {}).get('text_params') or {}).get('time_unit', 'ns')})", "Spectra",
+    )
     _add_legend_title_param(
         explorer, "kinetics", "K legend title", KINETICS_LEGEND_TITLE, "Kinetics"
     )
+    for idx, curve in enumerate(data.spectra):
+        _add_legend_text_param(explorer, "spectra", idx, curve, "S")
     for idx, curve in enumerate(data.kinetics):
         _add_legend_text_param(explorer, "kinetics", idx, curve, "K")
 
