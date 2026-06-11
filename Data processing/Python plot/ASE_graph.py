@@ -27,6 +27,8 @@ from tkinter import filedialog
 from PlotUtils import (
     setup_matplotlib_style,
     create_matched_fig_ax,
+    apply_matplotlib_export_axes_style,
+    set_matched_twin_y_right_margin,
     DynamicPlotExplorer,
     GLOBAL_FONT_SIZE,
     SPECTRA_COLOR_PALETTES,
@@ -554,7 +556,7 @@ def plot_matplotlib_spectra_static(spectra_data, save_dir, config=None):
     colors = sample_spectra_palette(palette_id, len(selected))
 
     setup_matplotlib_style()
-    fig, ax = create_matched_fig_ax(width_px=800, height_px=600, dpi=300)
+    fig, ax = create_matched_fig_ax()
 
     for c_idx, idx in enumerate(selected):
         energy   = pump_fluences[idx]
@@ -583,10 +585,10 @@ def plot_matplotlib_static(data_list, config, save_dir):
     df_plot_data, df_fit, exponent = data_list[:3]
     
     setup_matplotlib_style()
-    fig, ax1 = create_matched_fig_ax(width_px=800, height_px=600, dpi=300)
+    fig, ax1 = create_matched_fig_ax()
     
     # 调整右侧 Margin，给双 Y 轴留出空间
-    fig.subplots_adjust(right=1.0 - (90 / 800))
+    set_matched_twin_y_right_margin(fig)
     
     c_int = config["colors"].get("intensity", "#000000")
     c_fit = config["colors"].get("fit", "#FF0000")
@@ -618,6 +620,7 @@ def plot_matplotlib_static(data_list, config, save_dir):
         
     # 绘制右 Y 轴
     ax2 = ax1.twinx()
+    apply_matplotlib_export_axes_style(ax1, ax2)
     ax2.plot(df_plot_data['Fluence'], df_plot_data['FWHM'], 
              color=c_fwhm, marker='D', markersize=9, linewidth=w_fwhm, label='FWHM', zorder=4)
     ax2.set_ylabel("FWHM (nm)")

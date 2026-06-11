@@ -24,6 +24,21 @@ import cmcrameri.cm as cmc
 
 GLOBAL_FONT_SIZE = 22
 
+# Unified Matplotlib export format. Keep final PDF/SVG export settings here so
+# journal formatting changes do not need to be repeated in each plotting script.
+MATPLOTLIB_EXPORT_WIDTH_PX = 800
+MATPLOTLIB_EXPORT_HEIGHT_PX = 600
+MATPLOTLIB_EXPORT_DPI = 600
+MATPLOTLIB_EXPORT_AXES_LINEWIDTH = 1.0
+MATPLOTLIB_EXPORT_TICK_WIDTH = 1.0
+MATPLOTLIB_EXPORT_MAJOR_TICK_SIZE = 8
+MATPLOTLIB_EXPORT_MINOR_TICK_SIZE = 4
+MATPLOTLIB_EXPORT_MARGIN_LEFT_PX = 90
+MATPLOTLIB_EXPORT_MARGIN_RIGHT_PX = 40
+MATPLOTLIB_EXPORT_MARGIN_BOTTOM_PX = 90
+MATPLOTLIB_EXPORT_MARGIN_TOP_PX = 40
+MATPLOTLIB_EXPORT_TWINY_RIGHT_MARGIN_PX = 90
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 光谱 / 多曲线配色（Join_curves、Threshold_graph 等共用）
 # ══════════════════════════════════════════════════════════════════════════════
@@ -193,21 +208,23 @@ def setup_matplotlib_style(font_size=GLOBAL_FONT_SIZE):
     rcParams.update({
         "font.family":       "Arial",
         "font.size":         font_size,
+        "figure.dpi":        MATPLOTLIB_EXPORT_DPI,
+        "savefig.dpi":       MATPLOTLIB_EXPORT_DPI,
         "axes.labelsize":    font_size,
         "xtick.labelsize":   font_size,
         "ytick.labelsize":   font_size,
         "legend.fontsize":   font_size,
-        "axes.linewidth":    1.0,
+        "axes.linewidth":    MATPLOTLIB_EXPORT_AXES_LINEWIDTH,
         "xtick.direction":   "in",
         "ytick.direction":   "in",
-        "xtick.major.width": 1.0,
-        "ytick.major.width": 1.0,
-        "xtick.minor.width": 1.0,
-        "ytick.minor.width": 1.0,
-        "xtick.major.size":  8,
-        "ytick.major.size":  8,
-        "xtick.minor.size":  4,
-        "ytick.minor.size":  4,
+        "xtick.major.width": MATPLOTLIB_EXPORT_TICK_WIDTH,
+        "ytick.major.width": MATPLOTLIB_EXPORT_TICK_WIDTH,
+        "xtick.minor.width": MATPLOTLIB_EXPORT_TICK_WIDTH,
+        "ytick.minor.width": MATPLOTLIB_EXPORT_TICK_WIDTH,
+        "xtick.major.size":  MATPLOTLIB_EXPORT_MAJOR_TICK_SIZE,
+        "ytick.major.size":  MATPLOTLIB_EXPORT_MAJOR_TICK_SIZE,
+        "xtick.minor.size":  MATPLOTLIB_EXPORT_MINOR_TICK_SIZE,
+        "ytick.minor.size":  MATPLOTLIB_EXPORT_MINOR_TICK_SIZE,
         "xtick.top":         False,
         "ytick.right":       False,
         "legend.frameon":    False,
@@ -215,19 +232,47 @@ def setup_matplotlib_style(font_size=GLOBAL_FONT_SIZE):
         "svg.fonttype":      "none",
     })
 
-def create_matched_fig_ax(width_px=800, height_px=600, dpi=300):
+def apply_matplotlib_export_axes_style(*axes):
+    """Apply the unified export spine/tick format to existing Matplotlib axes."""
+    for ax in axes:
+        if ax is None:
+            continue
+        for spine in ax.spines.values():
+            spine.set_linewidth(MATPLOTLIB_EXPORT_AXES_LINEWIDTH)
+        ax.tick_params(
+            axis="both",
+            which="both",
+            direction="in",
+            width=MATPLOTLIB_EXPORT_TICK_WIDTH,
+        )
+
+def set_matched_right_margin(fig, right_margin_px=MATPLOTLIB_EXPORT_MARGIN_RIGHT_PX, width_px=None):
+    """Set right margin using the same pixel-space convention as create_matched_fig_ax."""
+    width_px = MATPLOTLIB_EXPORT_WIDTH_PX if width_px is None else width_px
+    fig.subplots_adjust(right=1.0 - (right_margin_px / width_px))
+
+def set_matched_twin_y_right_margin(fig, width_px=None):
+    """Use the shared wider right margin for Matplotlib figures with a second y-axis."""
+    set_matched_right_margin(fig, MATPLOTLIB_EXPORT_TWINY_RIGHT_MARGIN_PX, width_px=width_px)
+
+def create_matched_fig_ax(width_px=None, height_px=None, dpi=None):
     """
-    创建与 Plotly (800x600 px) 严格匹配的 Matplotlib 画布。
+    创建与 Plotly 预览尺寸严格匹配的 Matplotlib 画布。
     手动设置 Margin，与 Plotly 的默认边界完全对齐，保证拖拽坐标和相对字体大小一致。
     """
+    width_px = MATPLOTLIB_EXPORT_WIDTH_PX if width_px is None else width_px
+    height_px = MATPLOTLIB_EXPORT_HEIGHT_PX if height_px is None else height_px
+    dpi = MATPLOTLIB_EXPORT_DPI if dpi is None else dpi
+
     # Plotly 默认 margin: l=90, r=40, t=40, b=90
     fig, ax = plt.subplots(figsize=(width_px/72, height_px/72), dpi=dpi)
-    left_frac = 90 / width_px
-    right_frac = 1.0 - (40 / width_px)
-    bottom_frac = 90 / height_px
-    top_frac = 1.0 - (40 / height_px)
+    left_frac = MATPLOTLIB_EXPORT_MARGIN_LEFT_PX / width_px
+    right_frac = 1.0 - (MATPLOTLIB_EXPORT_MARGIN_RIGHT_PX / width_px)
+    bottom_frac = MATPLOTLIB_EXPORT_MARGIN_BOTTOM_PX / height_px
+    top_frac = 1.0 - (MATPLOTLIB_EXPORT_MARGIN_TOP_PX / height_px)
     
     fig.subplots_adjust(left=left_frac, right=right_frac, bottom=bottom_frac, top=top_frac)
+    apply_matplotlib_export_axes_style(ax)
     return fig, ax
 
 # ══════════════════════════════════════════════════════════════════════════════

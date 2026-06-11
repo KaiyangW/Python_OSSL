@@ -863,7 +863,7 @@ def plot_matplotlib_static(
     export_basename: str = "Join_curves",
 ) -> None:
     setup_matplotlib_style()
-    fig, ax = create_matched_fig_ax(width_px=800, height_px=GRAPH_HEIGHT, dpi=300)
+    fig, ax = create_matched_fig_ax()
     y_scale = 10.0 ** y_pow_exp if y_pow_exp != 0 else 1.0
     base = sanitize_export_basename(export_basename)
 

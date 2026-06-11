@@ -17,6 +17,8 @@ from Read_data_unified import read_workbook
 from PlotUtils import (
     setup_matplotlib_style,
     create_matched_fig_ax,
+    apply_matplotlib_export_axes_style,
+    set_matched_twin_y_right_margin,
     DynamicPlotExplorer,
     GLOBAL_FONT_SIZE,
     SPECTRA_COLOR_PALETTES,
@@ -234,6 +236,7 @@ def _apply_spec_spines_mpl(ax):
     ax.spines['top'].set_visible(True)
     ax.spines['right'].set_visible(True)
     ax.tick_params(top=False, right=False, labeltop=False, labelright=False)
+    apply_matplotlib_export_axes_style(ax)
 
 
 # =====================================================================
@@ -415,8 +418,8 @@ def plot_matplotlib_static(data_list, config, save_dir):
     setup_matplotlib_style()
 
     # —— 图1：Threshold ——
-    fig1, ax1 = create_matched_fig_ax(width_px=800, height_px=600, dpi=300)
-    fig1.subplots_adjust(right=1.0 - (90 / 800))
+    fig1, ax1 = create_matched_fig_ax()
+    set_matched_twin_y_right_margin(fig1)
 
     c_int = config["colors"].get("intensity", "#000000")
     c_fit = config["colors"].get("fit", "#FF0000")
@@ -444,6 +447,7 @@ def plot_matplotlib_static(data_list, config, save_dir):
     ax1.tick_params(top=False)
 
     ax2 = ax1.twinx()
+    apply_matplotlib_export_axes_style(ax1, ax2)
     ax2.plot(
         df_plot_data['Fluence'], df_plot_data['FWHM'],
         color=c_fwhm, marker='o', markersize=9, linewidth=w_fwhm, label='FWHM', zorder=4,
@@ -490,7 +494,7 @@ def plot_matplotlib_static(data_list, config, save_dir):
     w_spec = config["widths"].get("spectra", 1.8)
     spec_y_label = resolve_spec_y_label(config, for_mpl=True)
 
-    fig2, ax_s = create_matched_fig_ax(width_px=800, height_px=600, dpi=300)
+    fig2, ax_s = create_matched_fig_ax()
     for c_idx, idx in enumerate(selected):
         energy = pump_fluences[idx]
         ax_s.plot(
