@@ -59,6 +59,7 @@ SPECTRA_COLORBAR_DEFAULT_Y = 0.58
 SPECTRA_COLORBAR_DEFAULT_WIDTH = 0.8
 SPECTRA_COLORBAR_DEFAULT_HEIGHT = 0.035
 SPECTRA_COLORBAR_TICK_FONT_SIZE = GLOBAL_FONT_SIZE - 2
+SPECTRA_COLORBAR_TITLE_GAP_PX = 15
 
 
 @dataclass
@@ -419,6 +420,32 @@ def _plotly_discrete_colorscale(colors: list) -> list[list]:
     return colorscale
 
 
+def _plotly_spectra_colorbar_title_y(y: float, height: float) -> float:
+    thickness_px = max(6, int(height * MATPLOTLIB_EXPORT_HEIGHT_PX))
+    tick_area_px = SPECTRA_COLORBAR_TICK_FONT_SIZE + 8
+    bar_top_frac = y + (tick_area_px + thickness_px) / MATPLOTLIB_EXPORT_HEIGHT_PX
+    return bar_top_frac + SPECTRA_COLORBAR_TITLE_GAP_PX / MATPLOTLIB_EXPORT_HEIGHT_PX
+
+
+def _add_plotly_spectra_colorbar_title(
+    fig: go.Figure, config, x: float, y: float, width: float, height: float
+) -> None:
+    title = _spectra_colorbar_title(config)
+    if not title:
+        return
+    fig.add_annotation(
+        text=title,
+        xref="paper",
+        yref="paper",
+        x=x + width / 2,
+        y=_plotly_spectra_colorbar_title_y(y, height),
+        xanchor="center",
+        yanchor="bottom",
+        showarrow=False,
+        font=dict(size=GLOBAL_FONT_SIZE, color="black"),
+    )
+
+
 def _add_plotly_spectra_colorbar(
     fig: go.Figure,
     colors: list,
@@ -445,11 +472,6 @@ def _add_plotly_spectra_colorbar(
                 showscale=True,
                 size=0,
                 colorbar=dict(
-                    title=dict(
-                        text=_spectra_colorbar_title(config),
-                        side="top",
-                        font=dict(size=GLOBAL_FONT_SIZE),
-                    ),
                     orientation="h",
                     x=x + width / 2,
                     y=y,
@@ -468,6 +490,7 @@ def _add_plotly_spectra_colorbar(
             ),
         )
     )
+    _add_plotly_spectra_colorbar_title(fig, config, x, y, width, height)
 
 
 def _add_legend_title_param(
@@ -586,6 +609,13 @@ def _plotly_axis(title: str, axis_range=None) -> dict:
     return axis
 
 
+def _plotly_spectra_axis(title: str, axis_range=None, *, yaxis: bool = False) -> dict:
+    axis = _plotly_axis(title, axis_range)
+    axis["mirror"] = "all"
+    axis["side"] = "left" if yaxis else "bottom"
+    return axis
+
+
 def _trace_mode(style_name: str) -> str:
     return "lines+markers" if style_name == STYLE_SCATTER else "lines"
 
@@ -657,10 +687,11 @@ def build_plotly_spectra(data_list, config):
 
     fig.update_layout(
         font=dict(family="Arial", size=GLOBAL_FONT_SIZE, color="black"),
-        xaxis=_plotly_axis(data.spectra_x_label, config.get("xrange")),
-        yaxis=_plotly_axis(
+        xaxis=_plotly_spectra_axis(data.spectra_x_label, config.get("xrange")),
+        yaxis=_plotly_spectra_axis(
             _y_axis_title(data.spectra_y_label, exponent),
             _usable_scaled_range(config.get("yrange"), data.spectra, selected, exponent),
+            yaxis=True,
         ),
         plot_bgcolor="white",
         paper_bgcolor="white",
@@ -739,18 +770,30 @@ def _plot_mpl_curves(ax, curves, selected, colors, width, style_name, exponent, 
         )
 
 
+def _plotly_colorbar_box_to_mpl_axes(ax, x: float, y: float, width: float, height: float):
+    plot_box = ax.get_position()
+    mpl_width = width * plot_box.width
+    mpl_x = x + (width / 2) - (mpl_width / 2)
+    mpl_height = max(6, int(height * MATPLOTLIB_EXPORT_HEIGHT_PX)) / MATPLOTLIB_EXPORT_HEIGHT_PX
+    return mpl_x, y, mpl_width, mpl_height
+
+
 def _add_mpl_spectra_colorbar(fig, ax, colors, tick_values, tick_labels, config):
     if not colors:
         return
     x, y, width, height = _spectra_colorbar_box(config)
-    cax = ax.inset_axes([x, y, width, height])
+    cax = fig.add_axes(_plotly_colorbar_box_to_mpl_axes(ax, x, y, width, height))
     cmap = mpl.colors.ListedColormap(colors)
     boundaries = np.arange(len(colors) + 1) - 0.5
     norm = mpl.colors.BoundaryNorm(boundaries, cmap.N)
     sm = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
     cbar = fig.colorbar(sm, cax=cax, ticks=tick_values, orientation="horizontal")
-    cbar.set_label(_spectra_colorbar_title(config), fontsize=GLOBAL_FONT_SIZE)
+    cbar.set_label(
+        _spectra_colorbar_title(config),
+        fontsize=GLOBAL_FONT_SIZE,
+        labelpad=SPECTRA_COLORBAR_TITLE_GAP_PX,
+    )
     cbar.ax.set_xticks(tick_values)
     cbar.ax.set_xticklabels(tick_labels, fontsize=SPECTRA_COLORBAR_TICK_FONT_SIZE, rotation=0, ha="center")
     cbar.ax.tick_params(
@@ -764,7 +807,38 @@ def _add_mpl_spectra_colorbar(fig, ax, colors, tick_values, tick_labels, config)
     cbar.ax.set_yticks([])
     cbar.ax.xaxis.set_label_position("top")
     cbar.ax.xaxis.label.set_rotation(0)
+    title_gap_frac = SPECTRA_COLORBAR_TITLE_GAP_PX / MATPLOTLIB_EXPORT_HEIGHT_PX
+    cbar.ax.xaxis.set_label_coords(0, 1.05 + title_gap_frac * 4)
+    cbar.ax.xaxis.label.set_horizontalalignment("left")
     cbar.outline.set_linewidth(MATPLOTLIB_EXPORT_AXES_LINEWIDTH)
+
+
+def _make_figure() -> tuple[plt.Figure, plt.Axes]:
+    width_px = MATPLOTLIB_EXPORT_WIDTH_PX
+    height_px = MATPLOTLIB_EXPORT_HEIGHT_PX
+    fig, ax = plt.subplots(
+        figsize=(width_px / 72, height_px / 72),
+        dpi=MATPLOTLIB_EXPORT_DPI,
+    )
+    fig.subplots_adjust(
+        left=MATPLOTLIB_EXPORT_MARGIN_LEFT_PX / width_px,
+        right=1.0 - (MATPLOTLIB_EXPORT_MARGIN_RIGHT_PX / width_px),
+        bottom=MATPLOTLIB_EXPORT_MARGIN_BOTTOM_PX / height_px,
+        top=1.0 - (MATPLOTLIB_EXPORT_MARGIN_TOP_PX / height_px),
+    )
+    apply_matplotlib_export_axes_style(ax)
+    ax.spines["top"].set_visible(True)
+    ax.spines["right"].set_visible(True)
+    return fig, ax
+
+
+def _save_figure(fig, filepath: str) -> None:
+    fig.savefig(filepath, format="pdf", transparent=True)
+    svg_path = os.path.splitext(filepath)[0] + ".svg"
+    fig.savefig(svg_path, format="svg", transparent=True)
+    plt.close(fig)
+    print(f"Saved: {filepath}")
+    print(f"Saved: {svg_path}")
 
 
 def plot_matplotlib_static(data_list, config, save_dir):
@@ -775,63 +849,26 @@ def plot_matplotlib_static(data_list, config, save_dir):
     kinetics_exponent = _auto_y_exponent(data.kinetics, kinetics_selected)
 
     setup_matplotlib_style()
-    width_px = MATPLOTLIB_EXPORT_WIDTH_PX
-    height_px = MATPLOTLIB_EXPORT_HEIGHT_PX * 2
-    fig, (ax_spec, ax_kin) = plt.subplots(
-        2,
-        1,
-        figsize=(width_px / 72, height_px / 72),
-        dpi=MATPLOTLIB_EXPORT_DPI,
-        sharex=False,
-    )
-    fig.subplots_adjust(
-        left=MATPLOTLIB_EXPORT_MARGIN_LEFT_PX / width_px,
-        right=1.0 - (MATPLOTLIB_EXPORT_MARGIN_RIGHT_PX / width_px),
-        bottom=MATPLOTLIB_EXPORT_MARGIN_BOTTOM_PX / height_px,
-        top=1.0 - (MATPLOTLIB_EXPORT_MARGIN_TOP_PX / height_px),
-        hspace=0.38,
-    )
-    apply_matplotlib_export_axes_style(ax_spec, ax_kin)
 
     palette_id = config.get("spectra_palette", "viridis")
     spectra_colors = sample_spectra_palette(palette_id, len(spectra_selected))
     kinetics_colors = [config.get("colors", {}).get("kinetics", "#000000")] * len(kinetics_selected)
 
+    # --- Spectra figure ---
+    fig_spec, ax_spec = _make_figure()
     _plot_mpl_curves(
-        ax_spec,
-        data.spectra,
-        spectra_selected,
-        spectra_colors,
+        ax_spec, data.spectra, spectra_selected, spectra_colors,
         config["widths"].get("spectra", 1.8),
         config["text_params"].get("spectra_style", STYLE_SOLID),
-        spectra_exponent,
-        config,
-        "spectra",
-    )
-    _plot_mpl_curves(
-        ax_kin,
-        data.kinetics,
-        kinetics_selected,
-        kinetics_colors,
-        config["widths"].get("kinetics", 1.5),
-        config["text_params"].get("kinetics_style", STYLE_SCATTER),
-        kinetics_exponent,
-        config,
-        "kinetics",
+        spectra_exponent, config, "spectra",
     )
     _add_mpl_spectra_colorbar(
-        fig,
-        ax_spec,
-        spectra_colors,
-        *_spectra_colorbar_ticks(data.spectra, spectra_selected, config),
-        config,
+        fig_spec, ax_spec, spectra_colors,
+        *_spectra_colorbar_ticks(data.spectra, spectra_selected, config), config,
     )
-
+    ax_spec.tick_params(top=False, right=False, labeltop=False, labelright=False)
     ax_spec.set_xlabel(data.spectra_x_label)
     ax_spec.set_ylabel(_y_axis_title(data.spectra_y_label, spectra_exponent, for_mpl=True))
-    ax_kin.set_xlabel(data.kinetics_x_label)
-    ax_kin.set_ylabel(_y_axis_title(data.kinetics_y_label, kinetics_exponent, for_mpl=True))
-
     if config.get("xrange") and config["xrange"][0] is not None:
         ax_spec.set_xlim(*config["xrange"])
     spec_yrange = _usable_scaled_range(
@@ -839,6 +876,19 @@ def plot_matplotlib_static(data_list, config, save_dir):
     )
     if spec_yrange:
         ax_spec.set_ylim(*spec_yrange)
+    _save_figure(fig_spec, os.path.join(save_dir, f"{EXPORT_STEM}_Spectra.pdf"))
+
+    # --- Kinetics figure ---
+    fig_kin, ax_kin = _make_figure()
+    _plot_mpl_curves(
+        ax_kin, data.kinetics, kinetics_selected, kinetics_colors,
+        config["widths"].get("kinetics", 1.5),
+        config["text_params"].get("kinetics_style", STYLE_SCATTER),
+        kinetics_exponent, config, "kinetics",
+    )
+    ax_kin.tick_params(top=False, right=False, labeltop=False, labelright=False)
+    ax_kin.set_xlabel(data.kinetics_x_label)
+    ax_kin.set_ylabel(_y_axis_title(data.kinetics_y_label, kinetics_exponent, for_mpl=True))
     if config.get("xrange_spec") and config["xrange_spec"][0] is not None:
         ax_kin.set_xlim(*config["xrange_spec"])
     kin_yrange = _usable_scaled_range(
@@ -846,29 +896,12 @@ def plot_matplotlib_static(data_list, config, save_dir):
     )
     if kin_yrange:
         ax_kin.set_ylim(*kin_yrange)
-
-    for ax in (ax_spec, ax_kin):
-        ax.spines["top"].set_visible(True)
-        ax.spines["right"].set_visible(True)
-        ax.tick_params(top=False, right=True, labeltop=False)
-        if ax.get_legend_handles_labels()[0]:
-            group = "spectra" if ax is ax_spec else "kinetics"
-            if group == "spectra":
-                continue
-            default_title = SPECTRA_LEGEND_TITLE if ax is ax_spec else KINETICS_LEGEND_TITLE
-            ax.legend(
-                loc="best",
-                frameon=False,
-                title=_legend_title(config, group, default_title),
-            )
-
-    pdf_path = os.path.join(save_dir, f"{EXPORT_STEM}.pdf")
-    svg_path = os.path.join(save_dir, f"{EXPORT_STEM}.svg")
-    fig.savefig(pdf_path, format="pdf", transparent=True)
-    fig.savefig(svg_path, format="svg", transparent=True)
-    plt.close(fig)
-    print(f"Saved: {pdf_path}")
-    print(f"Saved: {svg_path}")
+    if ax_kin.get_legend_handles_labels()[0]:
+        ax_kin.legend(
+            loc="best", frameon=False,
+            title=_legend_title(config, "kinetics", KINETICS_LEGEND_TITLE),
+        )
+    _save_figure(fig_kin, os.path.join(save_dir, f"{EXPORT_STEM}_Kinetics.pdf"))
 
 
 def main():
