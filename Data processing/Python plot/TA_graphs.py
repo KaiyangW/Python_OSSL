@@ -57,6 +57,12 @@ PLOTLY_AXIS_LINEWIDTH = 1.5
 DEFAULT_SPECTRA_PALETTE = "viridis"
 DEFAULT_KINETICS_PALETTE = "viridis"
 KINETICS_PALETTE_OPTIONS = tuple(SPECTRA_COLOR_PALETTES.keys())
+_TIME_NUMBER_PATTERN = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+_TIME_NUMBER_RE = re.compile(_TIME_NUMBER_PATTERN)
+_TIME_VALUE_RE = re.compile(
+    rf"(?P<value>{_TIME_NUMBER_PATTERN})(?:\s*(?P<unit>ns|us|µs))?",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -220,31 +226,44 @@ def _format_number(value: float, unit: str) -> str:
     return f"{value:.6g} {unit}"
 
 
+def _normalize_time_unit(unit: str) -> str:
+    return "us" if str(unit).strip().lower() in {"us", "µs"} else "ns"
+
+
+def _strip_curve_prefix(label: str) -> str:
+    text = str(label).strip()
+    return re.sub(r"^\s*[SK]\d*\s*:\s*", "", text, count=1, flags=re.IGNORECASE).strip()
+
+
+def _legend_compare_key(label) -> str:
+    return re.sub(r"\s+", " ", str(label).strip())
+
+
+def _spectra_time_number_count(label: str) -> int:
+    return len(_TIME_NUMBER_RE.findall(_strip_curve_prefix(label)))
+
+
 def _parse_time_ns_from_label(label: str) -> float | None:
-    text = _clean_label(label)
-    if len(text) > 2 and text[0].upper() in {"S", "K"} and text[1].isdigit():
-        _, sep, rest = text.partition(":")
-        if sep and rest.strip():
-            text = rest.strip()
-    match = re.search(r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?', text)
+    text = _strip_curve_prefix(_clean_label(label))
+    match = _TIME_VALUE_RE.search(text)
     if not match:
         return None
     try:
-        value = float(match.group(0))
+        value = float(match.group("value"))
     except (ValueError, OverflowError):
         return None
     if not np.isfinite(value) or value < 0:
         return None
-    after_number = text[match.end():].strip().lower()
-    if after_number.startswith('us') or after_number.startswith('\xb5s'):
+    unit = (match.group("unit") or "ns").lower()
+    if unit in {"us", "µs"}:
         value *= 1000
     return value
 
 
 def _format_time_ns(value_ns: float, unit: str) -> str:
-    if unit == "us":
-        return f"{value_ns / 1000:.6g}"
-    return f"{value_ns:.6g}"
+    if _normalize_time_unit(unit) == "us":
+        return f"{value_ns / 1000:.2f}"
+    return f"{value_ns:.1f}"
 
 
 def _load_from_grid(path: Path) -> TAPlotData:
@@ -264,14 +283,37 @@ def _load_from_grid(path: Path) -> TAPlotData:
     return TAPlotData(path, spectra, kinetics)
 
 
+def _auto_kinetics_time_unit(data: TAPlotData) -> None:
+    """Auto-detect kinetics x-axis time unit and scale to us if values are us-level."""
+    if not data.kinetics:
+        return
+    label_lower = data.kinetics_x_label.lower()
+    if "us" in label_lower or "µs" in label_lower:
+        return
+    max_x = 0.0
+    for curve in data.kinetics:
+        x = np.asarray(curve.x, dtype=float)
+        finite = x[np.isfinite(x)]
+        if finite.size:
+            max_x = max(max_x, float(np.nanmax(np.abs(finite))))
+    if max_x >= 1000.0:
+        for curve in data.kinetics:
+            curve.x = curve.x / 1000.0
+        data.kinetics_x_label = "Time (us)"
+
+
 def load_ta_plot_data(path: str | os.PathLike) -> TAPlotData:
     p = Path(path)
     if p.suffix.lower() in {".xlsx", ".xls", ".xlsm"}:
         try:
-            return _load_from_workbook(p)
+            data = _load_from_workbook(p)
         except Exception as exc:
             print(f"Workbook-style TA output was not detected ({exc}); trying TA grid reader.")
-    return _load_from_grid(p)
+            data = _load_from_grid(p)
+    else:
+        data = _load_from_grid(p)
+    _auto_kinetics_time_unit(data)
+    return data
 
 
 def _default_indices(curves: list[Curve], limit: int = 8) -> list[int]:
@@ -324,14 +366,9 @@ def _legend_label(config, group: str, curve_idx: int, default: str,
             _text_param(config, f"kinetics_legend_label_{curve_idx}", _default_legend_text(default))
         )
 
-    if time_value_ns is not None:
-        clean = _default_legend_text(default)
-        if len(re.findall(r'\d+(?:\.\d+)?', clean)) <= 1:
-            return _format_spectra_legend_text(default, time_unit=time_unit, time_value_ns=time_value_ns)
-
-    current_default = _format_spectra_legend_text(default, time_unit=time_unit)
+    current_default = _auto_spectra_legend_text(default, time_unit=time_unit, time_value_ns=time_value_ns)
     label = _text_param(config, f"spectra_legend_label_{curve_idx}", current_default)
-    if label.strip() == current_default.strip():
+    if _is_auto_spectra_legend_text(label, default, time_value_ns):
         return current_default
     return _format_spectra_legend_text(label, time_unit=time_unit)
 
@@ -350,41 +387,60 @@ def _legend_title(config, group: str, default: str) -> str:
 
 
 def _default_legend_text(label: str) -> str:
-    text = str(label).strip()
-    if len(text) > 2 and text[0].upper() in {"S", "K"} and text[1].isdigit():
-        _, sep, rest = text.partition(":")
-        if sep and rest.strip():
-            text = rest.strip()
+    text = _strip_curve_prefix(label)
     return re.sub(r"\s*(?:ns|nm|us|µs)\s*$", "", text, flags=re.IGNORECASE).strip()
 
 
 def _format_spectra_legend_text(label: str, *, time_unit: str = "ns", time_value_ns: float | None = None) -> str:
-    if time_unit == "us":
-        fmt = ".2f"
-    else:
-        fmt = ".1f"
+    time_unit = _normalize_time_unit(time_unit)
 
     if time_value_ns is not None:
-        if time_unit == "us":
-            return f"{time_value_ns / 1000:{fmt}}"
-        return f"{time_value_ns:{fmt}}"
+        return _format_time_ns(time_value_ns, time_unit)
 
-    text = _default_legend_text(label)
+    text = _strip_curve_prefix(label)
+
+    def _fmt_time_value(match: re.Match) -> str:
+        value = float(match.group("value"))
+        unit = (match.group("unit") or "ns").lower()
+        if unit in {"us", "µs"}:
+            value *= 1000
+        return _format_time_ns(value, time_unit)
+
+    text = _TIME_VALUE_RE.sub(_fmt_time_value, text)
     text = re.sub(r"\b(?:ns|us|µs)\b", "", text, flags=re.IGNORECASE)
-
-    def _fmt_number(match: re.Match) -> str:
-        value = float(match.group(0))
-        if time_unit == "us":
-            value /= 1000
-        return f"{value:{fmt}}"
-
-    text = re.sub(
-        r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?",
-        _fmt_number,
-        text,
-    )
     text = re.sub(r"\s+", " ", text)
-    return text.strip(" -")
+    return text.strip()
+
+
+def _auto_spectra_legend_text(label: str, *, time_unit: str = "ns", time_value_ns: float | None = None) -> str:
+    if time_value_ns is not None and _spectra_time_number_count(label) <= 1:
+        return _format_time_ns(time_value_ns, time_unit)
+    return _format_spectra_legend_text(label, time_unit=time_unit)
+
+
+def _auto_spectra_legend_variants(label: str, time_value_ns: float | None = None) -> set[str]:
+    variants = {str(label).strip(), _default_legend_text(label)}
+    for unit in ("ns", "us"):
+        variants.add(_format_spectra_legend_text(label, time_unit=unit))
+        variants.add(_auto_spectra_legend_text(label, time_unit=unit, time_value_ns=time_value_ns))
+    if time_value_ns is not None:
+        variants.update(
+            {
+                _format_time_ns(time_value_ns, "ns"),
+                _format_time_ns(time_value_ns, "us"),
+                f"{time_value_ns:.6g}",
+                f"{time_value_ns / 1000:.6g}",
+            }
+        )
+    return {v for v in variants if v}
+
+
+def _is_auto_spectra_legend_text(label, default: str, time_value_ns: float | None = None) -> bool:
+    compare = _legend_compare_key(label)
+    return compare in {
+        _legend_compare_key(variant)
+        for variant in _auto_spectra_legend_variants(default, time_value_ns)
+    }
 
 
 def _add_legend_title_param(
@@ -401,13 +457,19 @@ def _add_legend_text_param(explorer, group: str, idx: int, curve: Curve, label_p
     key = f"{group}_legend_label_{idx}"
     time_unit = (explorer.config.get("text_params") or {}).get("time_unit", "ns")
     default_text = (
-        _format_spectra_legend_text(curve.label, time_unit=time_unit, time_value_ns=curve.time_value_ns)
+        _auto_spectra_legend_text(curve.label, time_unit=time_unit, time_value_ns=curve.time_value_ns)
         if group == "spectra"
         else _default_legend_text(curve.label)
     )
     existing = explorer.config.get("text_params", {}).get(key)
     explorer.add_text_param(f"{label_prefix}{idx + 1} legend", key, default_text)
-    if existing in (None, "", curve.label, _default_legend_text(curve.label)):
+    if group == "spectra":
+        should_reset = existing in (None, "") or _is_auto_spectra_legend_text(
+            existing, curve.label, curve.time_value_ns
+        )
+    else:
+        should_reset = existing in (None, "", curve.label, _default_legend_text(curve.label))
+    if should_reset:
         explorer.config["text_params"][key] = default_text
 
 
