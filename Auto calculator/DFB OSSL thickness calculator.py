@@ -16,6 +16,19 @@ DEFAULT_GRATING_PERIOD = 355  # nm
 DEFAULT_STOPBAND = 2.0 # nm
 CONFIG_FILE = os.path.join(r"C:\My files\Programs_codes", "dfb_OSSL_settings.json")
 
+# Dark Modern Flat Design palette
+DARK_BG = "#1a1a1a"
+PANEL_BG = "#242424"
+CARD_BG = "#2b2b2b"
+INPUT_BG = "#1f1f1f"
+BORDER = "#3a3a3a"
+TEXT = "#f2f2f2"
+MUTED_TEXT = "#b8b8b8"
+ACCENT = "#2CC985"
+ACCENT_HOVER = "#249b6b"
+ACCENT_RED = "#C92C45"
+GRID_COLOR = "#4a4a4a"
+
 def calculate_cutoff_thickness(wavelength, n2, n1, n3): 
     """Calculate cut-off thickness for TE0 and TE1 modes."""
     try:
@@ -206,9 +219,11 @@ def calculate_new_rpm(current_thickness, current_rpm, desired_thickness):
 
 class CutoffCalculatorGUI:
     def __init__(self):
-        ctk.set_appearance_mode("Light")
+        ctk.set_appearance_mode("Dark")
+        ctk.set_default_color_theme("green")
         self.root = ctk.CTk()
         self.root.title("DFB Organic Laser Calculator")
+        self.root.configure(fg_color=DARK_BG)
         
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
@@ -280,13 +295,53 @@ class CutoffCalculatorGUI:
         self.root.destroy()
     
     def create_widgets(self):
-        main_frame = ctk.CTkFrame(self.root)
+        title_font = ("Microsoft YaHei UI", 24, "bold")
+        section_font = ("Microsoft YaHei UI", 20, "bold")
+        label_font = ("Microsoft YaHei UI", 18)
+        small_label_font = ("Microsoft YaHei UI", 14)
+        entry_font = ("Microsoft YaHei UI", 18)
+        small_entry_font = ("Microsoft YaHei UI", 14)
+
+        def make_label(parent, text, font=label_font, text_color=TEXT, **kwargs):
+            return ctk.CTkLabel(
+                parent,
+                text=text,
+                font=font,
+                text_color=text_color,
+                **kwargs,
+            )
+
+        def make_entry(parent, font=entry_font, width=None):
+            kwargs = {
+                "font": font,
+                "fg_color": INPUT_BG,
+                "border_color": BORDER,
+                "border_width": 1,
+                "text_color": TEXT,
+                "placeholder_text_color": MUTED_TEXT,
+                "corner_radius": 8,
+            }
+            if width is not None:
+                kwargs["width"] = width
+            return ctk.CTkEntry(parent, **kwargs)
+
+        main_frame = ctk.CTkFrame(
+            self.root,
+            fg_color=PANEL_BG,
+            corner_radius=18,
+            border_width=1,
+            border_color=BORDER,
+        )
         main_frame.pack(padx=20, pady=20, fill='both', expand=True)
         
-        title_label = ctk.CTkLabel(main_frame, text="DFB Laser Thickness Calculator (Stopband Corrected)", font=("Microsoft YaHei UI", 24, "bold"))
+        title_label = make_label(
+            main_frame,
+            text="DFB Laser Thickness Calculator (Stopband Corrected)",
+            font=title_font,
+        )
         title_label.pack(pady=10)
         
-        grid_frame = ctk.CTkFrame(main_frame)
+        grid_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
         grid_frame.pack(padx=10, pady=10, fill='both', expand=True)
         
         grid_frame.grid_columnconfigure(0, weight=1)
@@ -296,84 +351,143 @@ class CutoffCalculatorGUI:
         grid_frame.grid_rowconfigure(1, weight=2)
         
         # --- INPUTS ---
-        input_frame = ctk.CTkFrame(grid_frame)
+        input_frame = ctk.CTkFrame(
+            grid_frame,
+            fg_color=CARD_BG,
+            corner_radius=14,
+            border_width=1,
+            border_color=BORDER,
+        )
         input_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
         
-        ctk.CTkLabel(input_frame, text="Laser Parameters", font=("Microsoft YaHei UI", 20, "bold")).pack(pady=5)
+        make_label(input_frame, text="Laser Parameters", font=section_font).pack(pady=5)
         
-        ctk.CTkLabel(input_frame, text="Target Wavelength (ASE Peak) [nm]:", font=("Microsoft YaHei UI", 18)).pack(pady=2)
-        self.wavelength_entry = ctk.CTkEntry(input_frame, font=("Microsoft YaHei UI", 18))
+        make_label(input_frame, text="Target Wavelength (ASE Peak) [nm]:").pack(pady=2)
+        self.wavelength_entry = make_entry(input_frame)
         self.wavelength_entry.pack(pady=2, padx=10, fill='x')
         
-        ctk.CTkLabel(input_frame, text="n2 (Organic Film):", font=("Microsoft YaHei UI", 18)).pack(pady=2)
-        self.n2_entry = ctk.CTkEntry(input_frame, font=("Microsoft YaHei UI", 18))
+        make_label(input_frame, text="n2 (Organic Film):").pack(pady=2)
+        self.n2_entry = make_entry(input_frame)
         self.n2_entry.pack(pady=2, padx=10, fill='x')
         
-        ctk.CTkLabel(input_frame, text="Stopband Width [nm]:", font=("Microsoft YaHei UI", 18), text_color="#A93226").pack(pady=2)
-        self.stopband_entry = ctk.CTkEntry(input_frame, font=("Microsoft YaHei UI", 18))
+        make_label(input_frame, text="Stopband Width [nm]:", text_color=ACCENT_RED).pack(pady=2)
+        self.stopband_entry = make_entry(input_frame)
         self.stopband_entry.insert(0, str(self.stopband_val))
         self.stopband_entry.pack(pady=2, padx=10, fill='x')
         
         # --- SPIN COATING ---
-        spin_frame = ctk.CTkFrame(grid_frame)
+        spin_frame = ctk.CTkFrame(
+            grid_frame,
+            fg_color=CARD_BG,
+            corner_radius=14,
+            border_width=1,
+            border_color=BORDER,
+        )
         spin_frame.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
         
-        ctk.CTkLabel(spin_frame, text="Process Calibration", font=("Microsoft YaHei UI", 20, "bold")).pack(pady=5)
-        ctk.CTkLabel(spin_frame, text="Ref. Thickness [nm]:", font=("Microsoft YaHei UI", 16)).pack(pady=2)
-        self.current_thickness_entry = ctk.CTkEntry(spin_frame, font=("Microsoft YaHei UI", 16))
+        make_label(spin_frame, text="Process Calibration", font=section_font).pack(pady=5)
+        make_label(spin_frame, text="Ref. Thickness [nm]:", font=("Microsoft YaHei UI", 16)).pack(pady=2)
+        self.current_thickness_entry = make_entry(spin_frame, font=("Microsoft YaHei UI", 16))
         self.current_thickness_entry.pack(pady=2, padx=10, fill='x')
-        ctk.CTkLabel(spin_frame, text="Ref. Speed [RPM]:", font=("Microsoft YaHei UI", 16)).pack(pady=2)
-        self.current_rpm_entry = ctk.CTkEntry(spin_frame, font=("Microsoft YaHei UI", 16))
+        make_label(spin_frame, text="Ref. Speed [RPM]:", font=("Microsoft YaHei UI", 16)).pack(pady=2)
+        self.current_rpm_entry = make_entry(spin_frame, font=("Microsoft YaHei UI", 16))
         self.current_rpm_entry.pack(pady=2, padx=10, fill='x')
         
         # --- CONSTANTS & RESULTS ---
-        bottom_frame = ctk.CTkFrame(grid_frame)
+        bottom_frame = ctk.CTkFrame(
+            grid_frame,
+            fg_color=CARD_BG,
+            corner_radius=14,
+            border_width=1,
+            border_color=BORDER,
+        )
         bottom_frame.grid(row=1, column=0, columnspan=2, padx=10, pady=10, sticky="nsew")
         
         const_frame = ctk.CTkFrame(bottom_frame, fg_color="transparent")
         const_frame.pack(pady=5, fill='x')
         
-        ctk.CTkLabel(const_frame, text=f"n1={self.n1_value} | ", font=("Microsoft YaHei UI", 14)).pack(side='left', padx=5)
-        ctk.CTkLabel(const_frame, text="n3=", font=("Microsoft YaHei UI", 14)).pack(side='left')
-        self.n3_entry = ctk.CTkEntry(const_frame, width=60)
+        make_label(const_frame, text=f"n1={self.n1_value} | ", font=small_label_font).pack(side='left', padx=5)
+        make_label(const_frame, text="n3=", font=small_label_font).pack(side='left')
+        self.n3_entry = make_entry(const_frame, font=small_entry_font, width=70)
         self.n3_entry.insert(0, str(self.n3_value))
         self.n3_entry.pack(side='left', padx=2)
         
-        ctk.CTkLabel(const_frame, text="| Period[nm]=", font=("Microsoft YaHei UI", 14)).pack(side='left')
-        self.grating_entry = ctk.CTkEntry(const_frame, width=60)
+        make_label(const_frame, text="| Period[nm]=", font=small_label_font).pack(side='left')
+        self.grating_entry = make_entry(const_frame, font=small_entry_font, width=70)
         self.grating_entry.insert(0, str(self.grating_period))
         self.grating_entry.pack(side='left', padx=2)
         
-        self.calc_button = ctk.CTkButton(bottom_frame, text="CALCULATE", font=("Microsoft YaHei UI", 18, "bold"), 
-                                        height=40, command=self.calculate)
+        self.calc_button = ctk.CTkButton(
+            bottom_frame,
+            text="CALCULATE",
+            font=("Microsoft YaHei UI", 18, "bold"),
+            height=42,
+            command=self.calculate,
+            fg_color=ACCENT,
+            hover_color=ACCENT_HOVER,
+            text_color="#ffffff",
+            corner_radius=10,
+        )
         self.calc_button.pack(pady=10, padx=20, fill='x')
         
-        self.results_text = ctk.CTkTextbox(bottom_frame, font=("Microsoft YaHei UI", 18), height=200)
+        self.results_text = ctk.CTkTextbox(
+            bottom_frame,
+            font=("Microsoft YaHei UI", 18),
+            height=200,
+            fg_color=INPUT_BG,
+            text_color=TEXT,
+            border_color=BORDER,
+            border_width=1,
+            corner_radius=10,
+            scrollbar_button_color=ACCENT,
+            scrollbar_button_hover_color=ACCENT_HOVER,
+        )
         self.results_text.pack(pady=5, padx=10, fill='both', expand=True)
         
         try:
-            self.results_text.tag_config("error_style", foreground="red", font=("Microsoft YaHei UI", 18, "bold"))
+            self.results_text.tag_config("error_style", foreground=ACCENT_RED, font=("Microsoft YaHei UI", 18, "bold"))
         except:
             pass 
 
-        graph_frame = ctk.CTkFrame(grid_frame)
+        graph_frame = ctk.CTkFrame(
+            grid_frame,
+            fg_color=CARD_BG,
+            corner_radius=14,
+            border_width=1,
+            border_color=BORDER,
+        )
         graph_frame.grid(row=0, column=2, rowspan=2, padx=10, pady=10, sticky="nsew")
         
-        self.fig = Figure(figsize=(5, 4), dpi=100)
+        self.fig = Figure(figsize=(5, 4), dpi=100, facecolor=DARK_BG)
         self.ax = self.fig.add_subplot(111)
+        self._style_axes()
         self.canvas = FigureCanvasTkAgg(self.fig, master=graph_frame)
         self.canvas.draw()
-        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        canvas_widget = self.canvas.get_tk_widget()
+        canvas_widget.configure(bg=CARD_BG, highlightthickness=0)
+        canvas_widget.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+    def _style_axes(self):
+        self.fig.patch.set_facecolor(DARK_BG)
+        self.ax.set_facecolor(PANEL_BG)
+        for spine in self.ax.spines.values():
+            spine.set_color(BORDER)
+        self.ax.tick_params(axis='both', which='major', colors=MUTED_TEXT, labelsize=22)
+        self.ax.xaxis.label.set_color(TEXT)
+        self.ax.yaxis.label.set_color(TEXT)
+        self.ax.title.set_color(TEXT)
+        self.ax.grid(True, linestyle='--', alpha=0.35, color=GRID_COLOR)
     
     def update_graph(self, res_dict, wavelength, stopband_width):
         self.fig.clf()
         self.ax = self.fig.add_subplot(111)
+        self._style_axes()
         
         d_values = res_dict['d_values']
         neff_values = res_dict['neff_values']
         valid = ~np.isnan(neff_values)
         
-        self.ax.plot(d_values[valid], neff_values[valid], 'k-', linewidth=2, label='Dispersion (TE0)')
+        self.ax.plot(d_values[valid], neff_values[valid], color=ACCENT, linewidth=2.5, label='Dispersion (TE0)')
         
         n1 = self.n1_value
         n2 = float(self.n2_entry.get())
@@ -383,25 +497,29 @@ class CutoffCalculatorGUI:
         neff_lower_bound = (wavelength - stopband_width/2) / grating
         neff_center = wavelength / grating
         
-        self.ax.axhspan(neff_lower_bound, neff_upper_bound, color='red', alpha=0.15, label='Stopband @ ASE')
-        self.ax.axhline(neff_center, color='red', linestyle='--', alpha=0.5)
+        self.ax.axhspan(neff_lower_bound, neff_upper_bound, color=ACCENT_RED, alpha=0.18, label='Stopband @ ASE')
+        self.ax.axhline(neff_center, color=ACCENT_RED, linestyle='--', alpha=0.75)
         
         if not np.isnan(res_dict['d_long_edge']):
-            self.ax.plot(res_dict['d_long_edge'], res_dict['n_eff_long'], 'bo', markersize=12, 
+            self.ax.plot(res_dict['d_long_edge'], res_dict['n_eff_long'], marker='o', color='#4da3ff', markersize=12, 
                          label='Long-Edge Mode Match (Recommended)')
         
         if not np.isnan(res_dict['d_short_edge']):
-            self.ax.plot(res_dict['d_short_edge'], res_dict['n_eff_short'], 'go', markersize=12, 
+            self.ax.plot(res_dict['d_short_edge'], res_dict['n_eff_short'], marker='o', color='#89d66f', markersize=12, 
                          label='Short-Edge Mode Match')
 
-        self.ax.tick_params(axis='both', which='major', labelsize=22)
+        self.ax.tick_params(axis='both', which='major', colors=MUTED_TEXT, labelsize=22)
         self.ax.set_ylim(n1 - 0.005, n2 + 0.005)
         self.ax.set_xlabel('Thickness (nm)', fontsize=24)
         self.ax.set_ylabel('Effective Index ($n_{eff}$)', fontsize=24)
         self.ax.set_title(f'Design for $\lambda_{{ASE}}={wavelength}nm$ (SB={stopband_width}nm)', fontsize=24)
         
-        self.ax.legend(loc='lower right', fontsize=22)
-        self.ax.grid(True, linestyle='--', alpha=0.6)
+        legend = self.ax.legend(loc='lower right', fontsize=22)
+        legend.get_frame().set_facecolor(CARD_BG)
+        legend.get_frame().set_edgecolor(BORDER)
+        for text in legend.get_texts():
+            text.set_color(TEXT)
+        self.ax.grid(True, linestyle='--', alpha=0.35, color=GRID_COLOR)
         
         self.fig.tight_layout()
         self.canvas.draw()
