@@ -114,7 +114,7 @@ def frame_metadata_column(frame_metadata, column_index, n_frames):
     arr = np.asarray(frame_metadata, dtype=object)
     if arr.ndim != 2 or arr.shape[1] <= column_index:
         return values
-    converted = pd.to_numeric(arr[:, column_index], errors='coerce').to_numpy(dtype=float)
+    converted = pd.to_numeric(arr[:, column_index], errors='coerce').astype(float)
     n = min(n_frames, converted.size)
     values[:n] = converted[:n]
     return values
