@@ -1,4 +1,4 @@
-# Consolidated requirements for the Python_OSSL repository.
+# Consolidated requirements for the Python_OSL repository.
 # Covers third-party imports across all scripts (Auto calculator, Data processing,
 # ns-TA, stresing_python-master). Standard-library and local modules are excluded.
 
