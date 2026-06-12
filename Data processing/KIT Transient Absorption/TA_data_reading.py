@@ -426,9 +426,6 @@ class TAViewer(ctk.CTk):
         self.cursor_artists: dict = {}
         self.baseline_notice_artists = []
         self.plot_selected_curve = None
-        # Secondary heatmap window. Created on demand and reused while open;
-        # cleared when the user closes the window.
-        self.heatmap_window = None
 
         self.file_var = tk.StringVar(value=str(DEFAULT_DATA_FILE))
         self.time_var = tk.StringVar(value="0")
@@ -679,29 +676,6 @@ class TAViewer(ctk.CTk):
             text_color="gray60",
         ).pack(fill="x", padx=pad, pady=(0, 4))
 
-        # --- Heatmap (secondary window) ---
-        section("Heatmap")
-        ctk.CTkButton(
-            sidebar,
-            text="Heatmap",
-            command=self.open_heatmap_window,
-            height=btn_h,
-            fg_color=ACCENT,
-            hover_color="#249b6b",
-            text_color="#0d0d0d",
-        ).pack(fill="x", padx=pad, pady=2)
-        ctk.CTkLabel(
-            sidebar,
-            text=(
-                "Opens a 2D heatmap window of the full grid (after baseline "
-                "and time shift). Curve selections do not filter it."
-            ),
-            anchor="w",
-            justify="left",
-            wraplength=wrap,
-            text_color="gray60",
-        ).pack(fill="x", padx=pad, pady=(0, 4))
-
         # --- Settings + output ---
         section("Settings & output")
         row = grid3()
@@ -933,7 +907,6 @@ class TAViewer(ctk.CTk):
             f"{self.data.wavelength_step_summary_nm[1]:.4g}/"
             f"{self.data.wavelength_step_summary_nm[2]:.4g} nm."
         )
-        self._refresh_heatmap_if_open()
 
     def _scale_changed(self, value: str) -> None:
         self.time_var.set(f"{float(value):.6g}")
@@ -1094,8 +1067,22 @@ class TAViewer(ctk.CTk):
             pad = (high - low) * margin
         return low - pad, high + pad
 
+    def get_current_y_range(self) -> tuple[float, float] | None:
+        """Return the current plotted curves' global Y data range (with margin)."""
+        all_y = []
+        for ax in self._all_axes():
+            for line in self._data_lines(ax):
+                y_data = np.asarray(line.get_ydata(), dtype=float)
+                finite = np.isfinite(y_data)
+                if finite.any():
+                    all_y.append(y_data[finite])
+        if not all_y:
+            return None
+        y_all = np.concatenate(all_y)
+        return self._limits_with_margin(y_all)
+
     # ------------------------------------------------------------------
-    # Data transforms (applied to both subplots)
+    # Data transforms (applied to both plots)
     # ------------------------------------------------------------------
     def flip_y_axis(self) -> None:
         lines = self._all_data_lines()
@@ -1178,7 +1165,6 @@ class TAViewer(ctk.CTk):
             ax.set_ylim(ylim)
         self.canvas.draw_idle()
         self._update_time_shift_label()
-        self._refresh_heatmap_if_open()
         self.status_var.set(
             f"Applied time shift of {self.data.time_shift_ns:.6g} ns "
             "(data time 0 moved to this physical time)."
@@ -1210,7 +1196,6 @@ class TAViewer(ctk.CTk):
             self.data.clear_baseline_correction()
             refreshed = self._refresh_all_curves()
             self._update_baseline_state_ui()
-            self._refresh_heatmap_if_open()
             self.status_var.set(
                 f"Baseline correction removed. Updated {refreshed} plotted curve(s)."
             )
@@ -1224,7 +1209,6 @@ class TAViewer(ctk.CTk):
 
         refreshed = self._refresh_all_curves()
         self._update_baseline_state_ui()
-        self._refresh_heatmap_if_open()
         t0_text = ""
         if info["estimated_t0_ns"] is not None:
             t0_text = f" Estimated t0: {info['estimated_t0_ns']:.6g} ns."
@@ -1540,9 +1524,6 @@ class TAViewer(ctk.CTk):
         self._sync_sliders_to_entries()
         self.apply_axis_limits()
         self._update_baseline_state_ui()
-        # Settings can restore baseline correction and time shift directly on
-        # the data object, so make sure any open heatmap reflects the new state.
-        self._refresh_heatmap_if_open()
 
     @staticmethod
     def _migrate_legacy_settings(settings: dict) -> dict:
@@ -1616,58 +1597,6 @@ class TAViewer(ctk.CTk):
                 self.wavelength_scale.set(wavelength_nm)
         except ValueError:
             pass
-
-    # ------------------------------------------------------------------
-    # Heatmap window (secondary view)
-    # ------------------------------------------------------------------
-    def open_heatmap_window(self) -> None:
-        if self.data is None:
-            messagebox.showwarning("No data", "Please load a data file first.")
-            return
-
-        # Reuse the existing window if it is still alive; only construct a new
-        # one when there is no open heatmap to refocus.
-        if self.heatmap_window is not None:
-            try:
-                if self.heatmap_window.winfo_exists():
-                    self.heatmap_window.refresh()
-                    self.heatmap_window.deiconify()
-                    self.heatmap_window.lift()
-                    self.heatmap_window.focus_force()
-                    return
-            except tk.TclError:
-                pass
-            self.heatmap_window = None
-
-        # Lazy import keeps TA_data_heatmap optional at startup and avoids any
-        # circular import with this module.
-        from TA_data_heatmap import TAHeatmapViewer
-
-        try:
-            window = TAHeatmapViewer(self)
-        except Exception as exc:
-            messagebox.showerror("Heatmap failed", str(exc))
-            return
-        self.heatmap_window = window
-        self.status_var.set("Opened heatmap window.")
-
-    def _on_heatmap_window_closed(self, window) -> None:
-        if self.heatmap_window is window:
-            self.heatmap_window = None
-
-    def _refresh_heatmap_if_open(self) -> None:
-        if self.heatmap_window is None:
-            return
-        try:
-            if not self.heatmap_window.winfo_exists():
-                self.heatmap_window = None
-                return
-            self.heatmap_window.refresh()
-        except (tk.TclError, RuntimeError):
-            self.heatmap_window = None
-        except Exception:
-            # A heatmap redraw must never break file loading or curve updates.
-            self.heatmap_window = None
 
     # ------------------------------------------------------------------
     # Output saving
